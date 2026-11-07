@@ -20,7 +20,7 @@ const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh')
 const CONFIG_PATH = path.join(DSH_HOME, 'fishbuddy-mac-plugin.json')
 const DEFAULT_APP = path.join(HOME, '.dsh', 'whale-work', 'fishbuddy-mac', 'DSH-FishBuddy.app')
 
-const VERSION = '0.8.0'
+const VERSION = '0.10.4'
 
 const DEFAULT_CONFIG = {
   会话: '',
@@ -208,11 +208,24 @@ export default {
       return `（刚才画面字幕：${line}）\n${text}`
     }
 
+    /** 绑定会话不存在时，退到最近活跃的那间（并在返回里带上标题） */
+    function resolveSession(requested) {
+      const list = listSessions()
+      const want = String(requested || '').trim()
+      const hit = want ? list.find((x) => x.id === want) : null
+      if (hit) return { id: hit.id, title: hit.title || hit.id, fallback: false }
+      if (list.length) return { id: list[0].id, title: list[0].title || list[0].id, fallback: !!want }
+      throw new Error('磁盘上没有任何会话')
+    }
+
     async function deliver(text, sessionId) {
       const controller = ctx.get('sessionController') || ctx.sessionController
       if (!controller) throw new Error('sessionController 不可用')
-      const target = String(sessionId || readConfig().会话 || '').trim()
-      if (!target) throw new Error('还没绑会话：设置 → 大肥鱼 → 送到哪一间')
+      const picked = resolveSession(String(sessionId || readConfig().会话 || '').trim())
+      const target = picked.id
+      if (picked.fallback) {
+        note('session-fallback', '绑定会话不在磁盘上，改送最近活跃：' + picked.title)
+      }
       try {
         await controller.create({ sessionId: target, cwd: process.cwd() })
       } catch {
@@ -231,7 +244,7 @@ export default {
       )
       state.says += 1
       note('say', text)
-      return target
+      return { id: target, title: picked.title, fallback: picked.fallback }
     }
 
     // ---------- 挂件 ----------
@@ -322,7 +335,14 @@ export default {
             let text = String(body.text ?? body.正文 ?? '').trim()
             if (!text) return json(res, 400, { ok: false, 说: '空的' })
             text = withSubtitles(text)
-            return json(res, 200, { ok: true, 说: '送进去了' })
+            const sent = await deliver(text, body.session)
+            return json(res, 200, {
+              ok: true,
+              说: '送进去了',
+              会话: sent.id,
+              标题: sent.title,
+              回落: sent.fallback,
+            })
           }
           if (p === '/hands/subtitle' || p === '/subtitle') {
             const body = await readBody(req)

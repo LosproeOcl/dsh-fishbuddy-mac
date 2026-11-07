@@ -1,6 +1,6 @@
 {
   "name": "dsh-fishbuddy-mac",
-  "version": "0.8.0",
+  "version": "0.10.4",
   "description": "大肥鱼 mac 挂件的 DSH 插件：把挂件说的话送进会话，把她的回话递回挂件，设置页里能直接开挂件设置。",
   "keywords": [
     "dsh",

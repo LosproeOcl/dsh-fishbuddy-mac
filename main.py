@@ -163,7 +163,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.10.2"
+VERSION = "0.10.4"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -254,12 +254,14 @@ def save_settings(d):
 
 
 def read_binding():
-    """插件那半边绑了哪间会话（只读，用来告诉你没绑）"""
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    """插件那半边绑了哪间会话（只读，用来提前提示没绑）"""
+    for path in (os.path.join(DSH_HOME, "fishbuddy-mac-plugin.json"), CONFIG_PATH):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            continue
+    return {}
 
 
 def capture_screen(max_w=1280, quality=72):
@@ -1155,8 +1157,13 @@ class Whale(NSObject):
                     j = json.loads(r.read().decode("utf-8"))
                 ok = bool(j.get("ok"))
                 msg = j.get("说") or ("送进去了" if ok else "没送进去")
+                title = str(j.get("标题") or "")
+                if ok and title:
+                    msg = "已送进「%s」" % title
+                if ok and j.get("回落"):
+                    msg += "（原绑定会话不在，改用最近活跃）"
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "uiState:", "ok" if ok else msg, False
+                    "uiState:", "ok" if (ok and not j.get("回落")) else msg, False
                 )
             except Exception as e:
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
