@@ -47,8 +47,8 @@ jobs:
           find . -name __pycache__ -type d -prune -exec rm -rf {} +
           zip -r "dsh-fishbuddy-mac-${TAG}.zip" \
             main.py build.sh install.sh requirements.txt requirements-dev.txt \
-            README.md LICENSE CHANGELOG.md pyproject.toml \
-            assets tests tools \
+            README.md LICENSE THIRD-PARTY.md CHANGELOG.md pyproject.toml \
+            assets tests tools plugin \
             -x "*.pyc" -x "__pycache__/*" -x "assets/鱼搭子.png"
           shasum -a 256 "dsh-fishbuddy-mac-${TAG}.zip" | tee "dsh-fishbuddy-mac-${TAG}.zip.sha256"
 

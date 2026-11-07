@@ -43,5 +43,15 @@ def test_hotkey_conflicts():
 
 
 def test_settings_has_new_keys():
-    for k in ("挂件", "形象", "键", "修饰"):
+    for k in ("挂件", "形象", "热键表"):
         assert k in main.DEFAULT_SETTINGS
+    tbl = main.DEFAULT_SETTINGS["热键表"]
+    assert set(tbl) == {"说话", "陪看", "看一眼", "设置"}
+    for combo in tbl.values():
+        assert len(combo) == 2
+
+
+def test_hotkey_table_conflict():
+    table = {"说话": [49, 1 << 19]}
+    assert main.hotkey_conflict(49, 1 << 19, table, skip="陪看") == "和「说话」用了同一个组合"
+    assert main.hotkey_conflict(49, 1 << 19, table, skip="说话") is None

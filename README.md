@@ -13,9 +13,9 @@
 桌面上养一只鲸鱼：**按住说话**，话就进了 DSH 的那间会话；**她的回话**会浮成气泡，还能念出来。
 想让她陪你一起看东西就开**陪看**，她会隔一会儿截一张你的屏幕。
 
-> 这是 [dsh-fish-buddy](https://github.com/Yuuyuko-uu/dsh-fish-buddy)（Windows 版挂件）在 macOS 上的重做版。
-> 只复用它**公开的插件协议**，UI 层照 AppKit 重写；**形象是我们自己画的**（`tools/make_assets.py`），
-> 不含原项目的任何图片素材。
+> 这是把「桌面上养一只会陪你说话的鲸鱼」在 macOS 上**从零做一套**：挂件（本仓库）+ 它自己的 DSH 插件（`plugin/`）。
+> 不依赖原版 `dsh-fish-buddy`，也不含它的任何代码或图片素材。
+> 形象用的是 [Twemoji](https://github.com/jdecked/twemoji) 的 🐳（CC-BY 4.0，见 [THIRD-PARTY.md](THIRD-PARTY.md)）。
 
 ```
         ┌─────────────────┐
@@ -56,11 +56,11 @@
 | **按住说话** | 按住鲸鱼说话 → 本机中文语音识别 → 送进绑定的会话 | 麦克风、语音识别 |
 | **回话气泡** | 她这一轮最后那段话，浮在鲸鱼上方，10 秒后自己消失 | — |
 | **念出来** | 用系统语音把回话读出来（中文 Tingting，不联网），可关 | — |
-| **全局热键** | 默认 `⌥Space` 按住说话，**可以自己改**，撞系统快捷键会提示 | 辅助功能（可选） |
+| **全局热键** | 四个动作各一个键：说话 `⌥Space` / 陪看 `⌥P` / 看一眼 `⌥L` / 设置 `⌥S`，**都能改**，撞系统快捷键或撞彼此会提示 | 辅助功能（可选） |
 | **陪看** | 每 20 秒截一张屏，**攒着**等说话时一起给她看，不打扰 | 屏幕录制 |
 | **让她看一眼** | 立刻截一张并叫醒她 | 屏幕录制 |
 | **两种形象** | 素材形象（鲸鱼）/ 极简圆点（安静不抢眼） | — |
-| **设置窗口** | 挂件开关、形象、热键、朗读、陪看间隔，改完即生效 | — |
+| **设置窗口** | 挂件开关、形象、四个热键、朗读、陪看间隔，改完即生效 | — |
 | **打字说** | 双击鲸鱼，弹输入框 | — |
 | **拖动 / 置顶** | 鲸鱼浮在所有窗口上、不抢焦点、拖着走 | — |
 
@@ -115,30 +115,29 @@ open DSH-FishBuddy.app
 
 ## 接上 DSH
 
-挂件只负责"听/看/说"，真正陪你聊的是 DSH 那间会话。所以要装 DSH 插件：
+挂件只负责"听/看/说"，真正陪你聊的是 DSH 那间会话。本仓库自带插件（`plugin/`），**不需要原版 `dsh-fish-buddy`**：
 
 ```sh
-dsh plugin --profile desktop add dsh-fish-buddy
+dsh plugin --profile desktop add ./plugin
 ```
 
-然后让插件知道**送到哪一间**、**回话递到哪**。编辑 `~/.dsh/fish-buddy-config.json`：
+> 装过原版的先卸掉，否则两边抢 8777：
+> `dsh plugin --profile desktop remove dsh-fish-buddy`
+
+装完重启 DSH，**设置 → 大肥鱼**：
+
+- **送到哪一间**：选你的会话
+- **启动挂件 / 打开挂件设置 / 让挂件露头**：三个按钮直接操作挂件
+- 配置存在 `~/.dsh/fishbuddy-mac-plugin.json`：
 
 ```json
 {
-  "总开关": true,
-  "端口": 8777,
   "会话": "session-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "回调": "http://127.0.0.1:8778/hands/reply",
-  "自动开挂件": false,
-  "回话端口": 8778
+  "挂件路径": "/Applications/DSH-FishBuddy.app",
+  "端口": 8777
 }
 ```
-
-- `会话`：DSH 里的会话 id（在 `~/.dsh/sessions/<工作区>/` 下能看到目录名），也可以去 **DSH 设置 → 鱼搭子 → 送到哪一间** 里选
-- `回调`：挂件监听 `8778`，插件把回话 POST 回来
-- `自动开挂件`：**必须关掉**——那个逻辑找的是 Windows 的 `.exe`
-
-装完重启一次 DSH。
 
 ## 怎么用
 
@@ -162,7 +161,7 @@ dsh plugin --profile desktop add dsh-fish-buddy
 |---|---|
 | **显示挂件** | 关掉后桌面上不占地方，只留菜单栏 🐋（设置还在） |
 | **形象** | `素材形象` = 那只鲸鱼；`极简圆点` = 一个小圆点 |
-| **全局热键** | 点一下按钮，按下你想用的组合键即可；**太素（不带 ⌘/⌥/⌃）或撞系统快捷键会被拒绝并说明原因** |
+| **全局热键** | 四个动作各一行，点按钮按下组合键即可；**太素（不带 ⌘/⌥/⌃）、撞系统快捷键、或和别的动作撞车，都会被拒绝并说明原因** |
 | **念出来** | 她的回话用系统语音读出来 |
 | **陪看间隔** | 10–120 秒，默认 20 |
 
@@ -175,9 +174,10 @@ macOS 不提供"查询所有 App 占用的快捷键"的接口，所以这层是*
 | 素材形象 | 极简圆点 |
 |---|---|
 | ![](assets/whale.png) | ![](assets/dot.png) |
-| 128px 的鲸鱼 | 36px 的小圆点，安静、不抢眼；说话时会轻微放大 |
+| 128px 的鲸鱼（Twemoji 🐳，CC-BY 4.0） | 36px 的纯色小圆点，**没有光晕**；说话时会轻微放大 |
 
-两者都是**本仓库自己画的**（`tools/make_assets.py`，MIT），想换成自己的图就覆盖 `assets/whale.png` / `assets/dot.png`。
+想换成自己的图就覆盖 `assets/whale.png` / `assets/dot.png`；
+`:python tools/make_assets.py` 会重新生成圆点（鲸鱼需要 `cairosvg` 从 `assets/whale.svg` 转）。
 
 ## 配置文件
 
@@ -208,6 +208,7 @@ macOS 不提供"查询所有 App 占用的快捷键"的接口，所以这层是*
 | 挂件 → 插件 | `POST 127.0.0.1:8777/hands/frame` | `{"图片": "<base64 jpeg>", "存档": 1, "立即": 0, "来源": "陪看"}` |
 | 挂件 → 插件 | `GET 127.0.0.1:8777/hands/ping` | — |
 | 插件 → 挂件 | `POST 127.0.0.1:8778/hands/reply` | `{"text": "她的回话", "session": "session-…"}` |
+| 插件 → 挂件 | `POST 127.0.0.1:8778/settings` · `/show` · `GET /state` | 打开设置 / 显示挂件 / 状态 |
 
 - `存档=1`：只攒着，不叫醒（陪看用）
 - `立即=1`：立刻发一轮（"让她看一眼"用）
@@ -231,7 +232,8 @@ python tools/make_assets.py     # 重新生成形象素材
 main.py                  全部逻辑（窗口 / 录音 / 识别 / 陪看 / 热键 / 设置窗口 / TTS / 回话服务）
 build.sh                 生成 DSH-FishBuddy.app
 install.sh               一键装
-tools/make_assets.py     画形象素材（原创）
+plugin/                  DSH 插件（宿主 + 设置页），替代原版 dsh-fish-buddy
+tools/make_assets.py     生成形象素材
 tests/test_basic.py      冒烟测试
 assets/                  whale.png / dot.png / whale.svg（都是自己画的）
 .github/workflows/       CI 与发版
@@ -275,7 +277,10 @@ assets/                  whale.png / dot.png / whale.svg（都是自己画的）
 
 ## 许可与致谢
 
-代码与形象素材都用 [MIT](LICENSE)，形象由 `tools/make_assets.py` 生成，可自由修改再分发。
+本仓库的代码（挂件 + 插件）用 [MIT](LICENSE)。
 
-设计思路与协议来自 [Yuuyuko-uu/dsh-fish-buddy](https://github.com/Yuuyuko-uu/dsh-fish-buddy)（插件许可 1.2）。
-**本仓库不包含该项目的源代码与图片素材**——它 README 里写明角色图、气泡框等素材不单独授权二次使用。
+形象素材来自 [Twemoji](https://github.com/jdecked/twemoji) 🐳 `1f433`，
+版权归 Twitter, Inc and other contributors，按 [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/) 使用；
+我们对它做了缩放与留白。完整声明见 [THIRD-PARTY.md](THIRD-PARTY.md)。
+
+不含原项目 [dsh-fish-buddy](https://github.com/Yuuyuko-uu/dsh-fish-buddy)（插件许可 1.2）的任何代码与图片素材。

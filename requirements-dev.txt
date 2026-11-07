@@ -1,3 +1,4 @@
 -r requirements.txt
 ruff>=0.6
 pytest>=8.0
+cairosvg>=2.7

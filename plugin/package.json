@@ -1,0 +1,20 @@
+{
+  "name": "dsh-fishbuddy-mac",
+  "version": "0.5.0",
+  "description": "大肥鱼 mac 挂件的 DSH 插件：把挂件说的话送进会话，把她的回话递回挂件，设置页里能直接开挂件设置。",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "macos", "companion"],
+  "type": "module",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "cordis.patch.yml", "README.md"],
+  "engines": { "node": ">=22" },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "inject": ["slots"], "external": ["react"] }
+  }
+}

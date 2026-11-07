@@ -1,0 +1,6 @@
+# dsh-fishbuddy-mac bundle patch
+#
+# 把宿主那一行插进 profile；配置写在 profile 自己的 patch 层里（见 README）。
+- insert:
+    - id: fishbuddy-mac
+      name: 'dsh-fishbuddy-mac'

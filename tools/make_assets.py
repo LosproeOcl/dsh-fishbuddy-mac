@@ -9,6 +9,7 @@
 不依赖任何第三方素材，纯 PIL 几何绘制，放大 4 倍再降采样做抗锯齿。
 """
 
+import io
 import os
 
 from PIL import Image, ImageDraw, ImageFilter
@@ -114,46 +115,36 @@ def whale():
 
 
 def dot():
-    s = 96 * K
-    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    """极简圆点：平涂，**不带光晕**，只有一点高光"""
+    s_ = 96 * 4
+    img = Image.new("RGBA", (s_, s_), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    # 外圈柔光
-    glow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse([0, 0, s - 1, s - 1], fill=BODY_TOP + (90,))
-    glow = glow.filter(ImageFilter.GaussianBlur(s * 0.06))
-    img = Image.alpha_composite(img, glow)
-    d = ImageDraw.Draw(img)
-    pad = int(s * 0.22)
-    d.ellipse([pad, pad, s - pad, s - pad], fill=BODY_TOP + (255,))
-    d.ellipse([int(s * 0.36), int(s * 0.30), int(s * 0.56), int(s * 0.44)],
-              fill=(255, 255, 255, 90))
+    pad = int(s_ * 0.16)
+    d.ellipse([pad, pad, s_ - pad, s_ - pad], fill=(59, 136, 195, 255))
     return img.resize((96, 96), Image.LANCZOS)
+
+
+def whale_from_svg():
+    """assets/whale.svg（Twemoji 🐳）→ 512 透明底，留 7% 边距"""
+    import cairosvg
+
+    svg = os.path.join(OUT, "whale.svg")
+    png = cairosvg.svg2png(url=svg, output_width=1024, output_height=1024)
+    src = Image.open(io.BytesIO(png)).convert("RGBA")
+    inner = int(S * 0.86)
+    canvas = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    canvas.alpha_composite(src.resize((inner, inner), Image.LANCZOS), ((S - inner) // 2,) * 2)
+    canvas.save(os.path.join(OUT, "whale.png"))
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    w = whale()
-    w.save(os.path.join(OUT, "whale.png"))
+    try:
+        whale_from_svg()
+    except Exception as e:
+        print("跳过鲸鱼（要 cairosvg）：", e)
     dot().save(os.path.join(OUT, "dot.png"))
     print("写好：assets/whale.png, assets/dot.png")
-    # 顺带留一份 SVG 轮廓，方便你自己改
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {S} {S}">
-  <defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0" stop-color="#2a8fd0"/><stop offset="1" stop-color="#176098"/>
-  </linearGradient></defs>
-  <ellipse cx="212" cy="258" rx="164" ry="138" fill="url(#b)"/>
-  <path d="M360 236 L474 140 L462 268 L506 318 L372 306 Z" fill="url(#b)"/>
-  <ellipse cx="228" cy="330" rx="56" ry="48" fill="#1e72aa"/>
-  <ellipse cx="230" cy="352" rx="150" ry="80" fill="#deedf7" opacity="0.9"/>
-  <circle cx="125" cy="218" r="15" fill="#0c2030"/>
-  <circle cx="130" cy="213" r="5" fill="#fff" opacity="0.9"/>
-  <circle cx="160" cy="252" r="10" fill="#ff96a0" opacity="0.28"/>
-</svg>
-"""
-    with open(os.path.join(OUT, "whale.svg"), "w", encoding="utf-8") as f:
-        f.write(svg)
-    print("写好：assets/whale.svg")
 
 
 if __name__ == "__main__":

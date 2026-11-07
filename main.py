@@ -64,12 +64,24 @@ DEFAULT_SETTINGS = {
     "形象": "image",       # image = 素材形象；minimal = 极简圆点
     "朗读": True,
     "热键": True,
-    "键": 49,              # 49 = space
-    "修饰": 1 << 19,       # 1<<19 = option
+    "热键表": {
+        "说话": [49, 1 << 19],    # ⌥Space（按住）
+        "陪看": [35, 1 << 19],    # ⌥P（切换）
+        "看一眼": [37, 1 << 19],  # ⌥L（按一下）
+        "设置": [1, 1 << 19],     # ⌥S（打开设置）
+    },
     "陪看间隔": 20,
 }
 
 MOD_MASK = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+
+# 热键动作：名字 → 说明（顺序就是设置窗口里的顺序）
+HOTKEY_ACTIONS = [
+    ("说话", "按住说话（松开发送）"),
+    ("陪看", "陪看 开 / 关"),
+    ("看一眼", "让她立刻看一眼"),
+    ("设置", "打开挂件设置"),
+]
 
 # 按 Apple 的书写习惯排：⌃⌥⇧⌘
 MOD_NAMES = [
@@ -81,6 +93,14 @@ KEY_NAMES = {
     126: "↑", 125: "↓", 123: "←", 124: "→",
     18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6",
     26: "7", 28: "8", 25: "9", 29: "0",
+    # 字母
+    0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H",
+    34: "I", 38: "J", 40: "K", 37: "L", 46: "M", 45: "N", 31: "O", 35: "P",
+    12: "Q", 15: "R", 1: "S", 17: "T", 32: "U", 9: "V", 13: "W", 7: "X",
+    16: "Y", 6: "Z",
+    # 符号
+    27: "-", 24: "=", 33: "[", 30: "]", 41: ";", 39: "'", 43: ",",
+    47: ".", 44: "/", 42: "\\", 50: "`", 10: "§",
     122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
     98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
 }
@@ -107,13 +127,26 @@ def key_name(code, mask):
     return mods + KEY_NAMES.get(code, "键%d" % code)
 
 
-def hotkey_conflict(code, mask):
-    """返回冲突说明；没问题返回 None"""
+def hotkey_conflict(code, mask, table=None, skip=None):
+    """返回冲突说明；没问题返回 None。
+
+    table: 当前热键表（name -> [code, mask]），用来查「和别的动作撞了」
+    skip:  正在改的那个动作名（它自己不算冲突）
+    """
     if not (mask & ((1 << 20) | (1 << 19) | (1 << 18))):
         return "要带 ⌘ / ⌥ / ⌃ 其中一个，不然会抢走打字"
     sys_hit = SYSTEM_HOTKEYS.get((code, mask))
     if sys_hit:
         return "和系统快捷键「%s」撞了" % sys_hit
+    for name, combo in (table or {}).items():
+        if name == skip:
+            continue
+        try:
+            c, m = int(combo[0]), int(combo[1])
+        except Exception:
+            continue
+        if c == code and (m & MOD_MASK) == mask:
+            return "和「%s」用了同一个组合" % name
     return None
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSET_CANDIDATES = [
@@ -121,7 +154,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -342,14 +375,20 @@ class TTS:
             pass
 
 
-class Hotkey:
-    """⌥Space 按住说话（全局；要「辅助功能/输入监控」权限）"""
+class Hotkeys:
+    """多动作全局热键：说话（按住）/ 陪看（切换）/ 看一眼 / 设置。
 
-    def __init__(self, on_down, on_up, binding):
-        self.on_down = on_down
-        self.on_up = on_up
-        self.binding = binding          # callable -> (keyCode, modifierMask)
-        self.down = False
+    绑定存在 settings["热键表"]，形如 {"说话": [49, 524288]}。
+    需要「辅助功能」权限，否则全局那几个键收不到。
+    """
+
+    def __init__(self, speak_down, speak_up, fire, table):
+        self.speak_down = speak_down
+        self.speak_up = speak_up
+        self.fire = fire            # fire(action_name)
+        self.table = table          # callable -> dict
+        self.holding = False
+        self.pressed = set()
         self.monitors = []
 
     @objc.python_method
@@ -376,24 +415,39 @@ class Hotkey:
         self.monitors = []
 
     @objc.python_method
+    def _match(self, code, mask):
+        for name, combo in (self.table() or {}).items():
+            try:
+                c, m = int(combo[0]), int(combo[1])
+            except Exception:
+                continue
+            if c == code and (int(m) & MOD_MASK) == mask:
+                return name
+        return None
+
+    @objc.python_method
     def _handle(self, ev):
         from AppKit import NSEventTypeKeyDown, NSEventTypeKeyUp
 
         try:
-            code, want = self.binding()
-            if ev.keyCode() != code:
+            if ev.isARepeat() if hasattr(ev, "isARepeat") else False:
                 return ev
-            got = ev.modifierFlags() & MOD_MASK
-            if got != (want & MOD_MASK):
+            action = self._match(int(ev.keyCode()), int(ev.modifierFlags()) & MOD_MASK)
+            if action is None:
                 return ev
             if ev.type() == NSEventTypeKeyDown:
-                if not self.down:
-                    self.down = True
-                    self.on_down()
+                if action == "说话":
+                    if not self.holding:
+                        self.holding = True
+                        self.speak_down()
+                elif action not in self.pressed:
+                    self.pressed.add(action)
+                    self.fire(action)
             elif ev.type() == NSEventTypeKeyUp:
-                if self.down:
-                    self.down = False
-                    self.on_up()
+                if action == "说话" and self.holding:
+                    self.holding = False
+                    self.speak_up()
+                self.pressed.discard(action)
         except Exception as e:
             log("热键处理出错", e)
         return ev
@@ -991,12 +1045,27 @@ class Whale(NSObject):
             pass
 
     @objc.python_method
-    def rebuild_hotkey(self):
+    def rebuild_hotkeys(self):
         if self.hotkey is None:
             return
         self.hotkey.stop()
         if self.settings.get("热键"):
             self.hotkey.start()
+
+    @objc.python_method
+    def fire_action(self, name):
+        if name == "陪看":
+            self.toggle_watch()
+        elif name == "看一眼":
+            self.look_now()
+        elif name == "设置":
+            self.openSettings_(None)
+
+    def showWidget_(self, sender):
+        self.settings["挂件"] = True
+        save_settings(self.settings)
+        self.apply_widget_enabled(True)
+        self.win.orderFrontRegardless()
 
     def openSettings_(self, sender):
         if self.settings_win is None:
@@ -1072,7 +1141,7 @@ class SettingsWindow(NSObject):
 
     @objc.python_method
     def build(self):
-        w, h = 470.0, 360.0
+        w, h = 470.0, 500.0
         self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, w, h),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
@@ -1118,17 +1187,25 @@ class SettingsWindow(NSObject):
             "极简：只留一个小圆点，安静不抢眼", 80, h - 146, 360, size=11, gray=True
         )
 
-        # 3) 热键
-        label("全局热键", 20, h - 196, 70)
-        self.btn_hotkey = NSButton.alloc().initWithFrame_(NSMakeRect(96, h - 200, 150, 28))
-        self.btn_hotkey.setBezelStyle_(1)
-        self.btn_hotkey.setTarget_(self)
-        self.btn_hotkey.setAction_("recordHotkey:")
-        v.addSubview_(self.btn_hotkey)
-        self.lbl_hint = label("", 256, h - 196, 190, size=11, gray=True)
+        # 3) 热键（四个动作各一行）
+        label("全局热键", 20, h - 186, 90, bold=True)
+        self.hotkey_buttons = {}
+        top = h - 214
+        for i, (name, desc) in enumerate(HOTKEY_ACTIONS):
+            y = top - i * 34
+            label(name, 34, y + 3, 60)
+            btn = NSButton.alloc().initWithFrame_(NSMakeRect(96, y - 2, 150, 26))
+            btn.setBezelStyle_(1)
+            btn.setTag_(i)
+            btn.setTarget_(self)
+            btn.setAction_("recordHotkey:")
+            v.addSubview_(btn)
+            self.hotkey_buttons[name] = btn
+            label(desc, 256, y + 3, 190, size=11, gray=True)
+        self.lbl_hint = label("", 96, h - 186 - 4, 360, size=11, gray=True)
 
         # 4) 朗读
-        self.cb_speak = NSButton.alloc().initWithFrame_(NSMakeRect(20, h - 236, 320, 24))
+        self.cb_speak = NSButton.alloc().initWithFrame_(NSMakeRect(20, h - 370, 320, 24))
         self.cb_speak.setButtonType_(3)
         self.cb_speak.setTitle_("念出来（用系统语音读她的回话）")
         self.cb_speak.setTarget_(self)
@@ -1136,8 +1213,8 @@ class SettingsWindow(NSObject):
         v.addSubview_(self.cb_speak)
 
         # 5) 陪看间隔
-        label("陪看间隔", 20, h - 276, 70)
-        self.step = NSStepper.alloc().initWithFrame_(NSMakeRect(96, h - 280, 19, 27))
+        label("陪看间隔", 20, h - 408, 70)
+        self.step = NSStepper.alloc().initWithFrame_(NSMakeRect(96, h - 412, 19, 27))
         self.step.setMinValue_(10)
         self.step.setMaxValue_(120)
         self.step.setIncrement_(10)
@@ -1145,7 +1222,7 @@ class SettingsWindow(NSObject):
         self.step.setTarget_(self)
         self.step.setAction_("intervalChanged:")
         v.addSubview_(self.step)
-        self.lbl_interval = label("20 秒", 124, h - 274, 80)
+        self.lbl_interval = label("20 秒", 124, h - 406, 80)
 
         # 关闭
         btn = NSButton.alloc().initWithFrame_(NSMakeRect(w - 120, 18, 100, 30))
@@ -1163,12 +1240,15 @@ class SettingsWindow(NSObject):
         self.cb_speak.setState_(1 if st.get("朗读") else 0)
         self.step.setIntegerValue_(int(st.get("陪看间隔") or 20))
         self.lbl_interval.setStringValue_("%d 秒" % int(st.get("陪看间隔") or 20))
-        self.btn_hotkey.setTitle_(key_name(int(st.get("键", 49)), int(st.get("修饰", 1 << 19))))
-        reason = hotkey_conflict(int(st.get("键", 49)), int(st.get("修饰", 1 << 19)))
-        self.lbl_hint.setStringValue_(reason or "和系统快捷键不冲突")
-        self.lbl_hint.setTextColor_(
-            NSColor.systemRedColor() if reason else NSColor.secondaryLabelColor()
+        table = st.get("热键表") or {}
+        for name, btn in self.hotkey_buttons.items():
+            combo = table.get(name) or [49, 1 << 19]
+            btn.setTitle_(key_name(int(combo[0]), int(combo[1])))
+        self.lbl_hint.setStringValue_(
+            "快捷键默认 ⌥Space / ⌥P / ⌥L / ⌥S；点按钮即可改" if st.get("热键")
+            else "全局热键总开关是关的（只有菜单和鲸鱼可用）"
         )
+        self.lbl_hint.setTextColor_(NSColor.secondaryLabelColor())
 
     @objc.python_method
     def show(self):
@@ -1208,10 +1288,11 @@ class SettingsWindow(NSObject):
     def recordHotkey_(self, sender):
         from AppKit import NSEvent, NSEventMaskKeyDown
 
+        name = HOTKEY_ACTIONS[int(sender.tag())][0]
         if self.recorder is not None:
             NSEvent.removeMonitor_(self.recorder)
             self.recorder = None
-        self.lbl_hint.setStringValue_("按下组合键…（Esc 取消）")
+        self.lbl_hint.setStringValue_("给「%s」按下组合键…（Esc 取消）" % name)
         self.lbl_hint.setTextColor_(NSColor.secondaryLabelColor())
         sender.setTitle_("…")
 
@@ -1222,20 +1303,20 @@ class SettingsWindow(NSObject):
                 self.stop_record()
                 self.refresh()
                 return ev
-            bad = hotkey_conflict(code, mask)
+            table = self.whale.settings.setdefault("热键表", {})
+            bad = hotkey_conflict(code, mask, table, skip=name)
             if bad:
                 self.lbl_hint.setStringValue_(bad)
                 self.lbl_hint.setTextColor_(NSColor.systemRedColor())
                 self.stop_record()
-                self.btn_hotkey.setTitle_(key_name(int(self.whale.settings.get("键", 49)),
-                                                   int(self.whale.settings.get("修饰", 1 << 19))))
+                self.refresh()
                 return ev
-            self.whale.settings["键"] = code
-            self.whale.settings["修饰"] = mask
+            table[name] = [code, mask]
             save_settings(self.whale.settings)
             self.stop_record()
-            self.whale.rebuild_hotkey()
+            self.whale.rebuild_hotkeys()
             self.refresh()
+            self.lbl_hint.setStringValue_("「%s」改好了：%s" % (name, key_name(code, mask)))
             return ev
 
         self.recorder = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
@@ -1259,7 +1340,7 @@ class ReplyServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def start_reply_server(on_text):
+def start_reply_server(on_text, on_open_settings=None, on_show=None, state=None):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -1273,9 +1354,25 @@ def start_reply_server(on_text):
             self.wfile.write(body)
 
         def do_GET(self):
+            path = str(self.path or "/").split("?")[0]
+            if path == "/settings" and on_open_settings:
+                on_open_settings()
+                return self._send({"ok": True, "说": "设置打开了"})
+            if path == "/show" and on_show:
+                on_show()
+                return self._send({"ok": True, "说": "挂件出来了"})
+            if path == "/state":
+                return self._send({"ok": True, **(state() if state else {})})
             self._send({"ok": True, "说": "鱼搭子在"})
 
         def do_POST(self):
+            path = str(self.path or "/").split("?")[0]
+            if path == "/settings" and on_open_settings:
+                on_open_settings()
+                return self._send({"ok": True, "说": "设置打开了"})
+            if path == "/show" and on_show:
+                on_show()
+                return self._send({"ok": True, "说": "挂件出来了"})
             n = int(self.headers.get("content-length") or 0)
             raw = self.rfile.read(n) if n else b"{}"
             try:
@@ -1324,16 +1421,28 @@ def main():
 
     speech.request_permission(on_auth)
 
-    start_reply_server(lambda t: whale.performSelectorOnMainThread_withObject_waitUntilDone_("speak:", t, False))
+    start_reply_server(
+        lambda t: whale.performSelectorOnMainThread_withObject_waitUntilDone_("speak:", t, False),
+        on_open_settings=lambda: whale.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "openSettings:", None, False
+        ),
+        on_show=lambda: whale.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "showWidget:", None, False
+        ),
+        state=lambda: {
+            "version": VERSION,
+            "watching": bool(whale.watching),
+            "形象": whale.settings.get("形象"),
+            "挂件": whale.settings.get("挂件"),
+        },
+    )
 
     whale.tts = TTS()
-    whale.hotkey = Hotkey(
+    whale.hotkey = Hotkeys(
         whale.begin_talk,
         whale.end_talk,
-        lambda: (
-            int(whale.settings.get("键", 49)),
-            int(whale.settings.get("修饰", 1 << 19)),
-        ),
+        whale.fire_action,
+        lambda: whale.settings.get("热键表") or {},
     )
     if whale.settings.get("热键"):
         if not whale.hotkey.start():
