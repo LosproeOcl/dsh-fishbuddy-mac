@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: lint + test（macOS / Python ${{ matrix.python }}）
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: 语法检查
+        run: python -m py_compile main.py
+
+      - name: ruff
+        run: ruff check .
+
+      - name: pytest
+        run: python -m pytest -q
+
+      - name: 一键构建（只验 build.sh 不炸）
+        run: |
+          ./build.sh "$(command -v python)"
+          test -x DSH-FishBuddy.app/Contents/MacOS/FishBuddy
+          plutil -lint DSH-FishBuddy.app/Contents/Info.plist

@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发的 tag（例如 v0.3.0）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 打包 + 发版
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 校验版本号
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VER="v$(python -c "import re;print(re.search(r'VERSION = \"([^\"]+)\"', open('main.py').read()).group(1))")"
+          echo "tag=$TAG  code=$VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::tag ($TAG) 和 main.py 里的 VERSION ($VER) 不一致"
+            exit 1
+          fi
+
+      - name: 装依赖并跑测试
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q
+
+      - name: 打 zip
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          mv DSH-FishBuddy.app DSH-FishBuddy.app 2>/dev/null || true
+          zip -r "dsh-fishbuddy-mac-${TAG}.zip" \
+            main.py build.sh install.sh requirements.txt requirements-dev.txt \
+            README.md LICENSE CHANGELOG.md pyproject.toml assets/README.md tests \
+            -x "*.pyc" -x "__pycache__/*"
+          shasum -a 256 "dsh-fishbuddy-mac-${TAG}.zip" | tee "dsh-fishbuddy-mac-${TAG}.zip.sha256"
+
+      - name: 发 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dsh-fishbuddy-mac-*.zip
+            dsh-fishbuddy-mac-*.zip.sha256

@@ -2,6 +2,10 @@ DSH-FishBuddy.app/
 .venv/
 __pycache__/
 *.pyc
+.ruff_cache/
+.pytest_cache/
+*.zip
+*.sha256
 assets/whale.png
 assets/*.png
 !assets/README.md

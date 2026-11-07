@@ -15,9 +15,7 @@ import base64
 import io
 import json
 import os
-import queue
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -27,24 +25,42 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import objc
 from AppKit import (
-    NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered,
-    NSBezierPath, NSColor, NSFont, NSImage, NSImageView, NSMenu, NSMenuItem,
-    NSPanel, NSStatusBar, NSTextField, NSView, NSWindowStyleMaskBorderless,
-    NSWindowStyleMaskNonactivatingPanel, NSMakeRect, NSMakeSize, NSObject,
+    NSApplication,
+    NSApplicationActivationPolicyAccessory,
+    NSBackingStoreBuffered,
+    NSBezierPath,
+    NSColor,
+    NSFont,
+    NSImage,
+    NSImageView,
+    NSMakeRect,
+    NSMakeSize,
+    NSMenu,
+    NSMenuItem,
+    NSObject,
+    NSPanel,
+    NSStatusBar,
+    NSTextField,
     NSVariableStatusItemLength,
+    NSView,
+    NSWindowStyleMaskBorderless,
+    NSWindowStyleMaskNonactivatingPanel,
 )
-from Foundation import NSDate, NSLocale, NSRunLoop, NSTimer, NSURL
+from Foundation import NSURL, NSLocale, NSTimer
 
 SEND_URL = "http://127.0.0.1:8777/hands/say"
 REPLY_PORT = 8778
 DSH_HOME = os.environ.get("DSH_HOME") or os.path.expanduser("~/.dsh")
 CONFIG_PATH = os.path.join(DSH_HOME, "fish-buddy-config.json")
+SETTINGS_PATH = os.path.join(DSH_HOME, "fishbuddy-mac.json")
+DEFAULT_SETTINGS = {"朗读": True, "热键": True, "陪看间隔": 20}
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "whale.png"),
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
+VERSION = "0.3.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -52,6 +68,25 @@ MAX_RECORD = 30.0
 
 def log(*a):
     print("[fish]", *a, flush=True)
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+        out = dict(DEFAULT_SETTINGS)
+        out.update({k: v for k, v in d.items() if k in DEFAULT_SETTINGS})
+        return out
+    except Exception:
+        return dict(DEFAULT_SETTINGS)
+
+
+def save_settings(d):
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log("存设置失败", e)
 
 
 def read_binding():
@@ -191,7 +226,7 @@ class Speech:
 
 
 def placeholder_image():
-    from AppKit import NSImage, NSColor, NSBezierPath, NSMakeRect
+    from AppKit import NSColor, NSImage, NSMakeRect
 
     img = NSImage.alloc().initWithSize_(NSMakeSize(BALL, BALL))
     img.lockFocus()
@@ -199,6 +234,108 @@ def placeholder_image():
     NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(2, 2, BALL - 4, BALL - 4)).fill()
     img.unlockFocus()
     return img
+
+
+class TTS:
+    """她的回话念出来（系统语音合成，不用联网）"""
+
+    def __init__(self):
+        from AVFoundation import AVSpeechSynthesizer
+
+        self.synth = AVSpeechSynthesizer.alloc().init()
+        self.voice = None
+        try:
+            from AVFoundation import AVSpeechSynthesisVoice
+
+            self.voice = AVSpeechSynthesisVoice.voiceWithLanguage_("zh-CN")
+        except Exception:
+            pass
+
+    @objc.python_method
+    def say(self, text):
+        from AVFoundation import AVSpeechUtterance
+
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            utt = AVSpeechUtterance.speechUtteranceWithString_(text[:400])
+            if self.voice is not None:
+                utt.setVoice_(self.voice)
+            utt.setRate_(0.5)
+            self.synth.speakUtterance_(utt)
+        except Exception as e:
+            log("朗读失败", e)
+
+    @objc.python_method
+    def stop(self):
+        try:
+            self.synth.stopSpeakingAtBoundary_(0)
+        except Exception:
+            pass
+
+
+class Hotkey:
+    """⌥Space 按住说话（全局；要「辅助功能/输入监控」权限）"""
+
+    def __init__(self, on_down, on_up):
+        self.on_down = on_down
+        self.on_up = on_up
+        self.down = False
+        self.monitors = []
+
+    @objc.python_method
+    def start(self):
+        from AppKit import NSEvent, NSEventMaskKeyDown, NSEventMaskKeyUp
+
+        if self.monitors:
+            return True
+        mask = NSEventMaskKeyDown | NSEventMaskKeyUp
+        g = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, self._handle)
+        loc = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, self._handle)
+        self.monitors = [g, loc]
+        return g is not None
+
+    @objc.python_method
+    def stop(self):
+        from AppKit import NSEvent
+
+        for m in self.monitors:
+            try:
+                NSEvent.removeMonitor_(m)
+            except Exception:
+                pass
+        self.monitors = []
+
+    @objc.python_method
+    def _handle(self, ev):
+        from AppKit import NSEventModifierFlagOption, NSEventTypeKeyDown, NSEventTypeKeyUp
+
+        try:
+            if ev.keyCode() != 49:  # space
+                return ev
+            if not (ev.modifierFlags() & NSEventModifierFlagOption):
+                return ev
+            if ev.type() == NSEventTypeKeyDown:
+                if not self.down:
+                    self.down = True
+                    self.on_down()
+            elif ev.type() == NSEventTypeKeyUp:
+                if self.down:
+                    self.down = False
+                    self.on_up()
+        except Exception as e:
+            log("热键处理出错", e)
+        return ev
+
+
+def ax_trusted():
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+
+        return bool(AXIsProcessTrusted())
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- 气泡
@@ -356,7 +493,10 @@ class Whale(NSObject):
         self.sent_frames = 0
         self.strip = None
         self.strip_label = None
-        self.watch_interval = 20.0
+        self.settings = load_settings()
+        self.watch_interval = float(self.settings.get("陪看间隔") or 20)
+        self.tts = None
+        self.hotkey = None
         return self
 
     # ---------- 窗口 ----------
@@ -508,11 +648,13 @@ class Whale(NSObject):
             self.bubble.show_text(str(msg), 6, error=True)
 
     def speak_(self, text):
-        """她说话了：气泡 + 轻微状态"""
+        """她说话了：气泡 + （可选）念出来"""
         if not text:
             return
         self.set_state("idle")
         self.bubble.show_text(text, 10)
+        if self.settings.get("朗读") and self.tts is not None:
+            self.tts.say(text)
 
     @objc.python_method
     def ask_text(self):
@@ -664,8 +806,41 @@ class Whale(NSObject):
     def lookMenu_(self, sender):
         self.look_now()
 
+    def speakMenu_(self, sender):
+        self.settings["朗读"] = not self.settings.get("朗读")
+        save_settings(self.settings)
+        sender.setTitle_("念出来（%s）" % ("开" if self.settings["朗读"] else "关"))
+        if not self.settings["朗读"] and self.tts is not None:
+            self.tts.stop()
+
+    def hotkeyMenu_(self, sender):
+        self.settings["热键"] = not self.settings.get("热键")
+        save_settings(self.settings)
+        if self.settings["热键"]:
+            ok = self.hotkey.start() if self.hotkey is not None else False
+            self.bubble.show_text(
+                "⌥Space 按住说话：开了" if ok else "热键没起来——去系统设置给「辅助功能」权限",
+                5,
+                error=not ok,
+            )
+        else:
+            if self.hotkey is not None:
+                self.hotkey.stop()
+            self.bubble.show_text("全局热键关了", 2)
+        sender.setTitle_("全局热键 ⌥Space（%s）" % ("开" if self.settings["热键"] else "关"))
+
+    def openAccessibility_(self, sender):
+        from AppKit import NSURL, NSWorkspace
+
+        NSWorkspace.sharedWorkspace().openURL_(
+            NSURL.URLWithString_(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            )
+        )
+        self.bubble.show_text("把「大肥鱼」勾上，然后重开挂件", 6)
+
     def openScreenSettings_(self, sender):
-        from AppKit import NSWorkspace, NSURL
+        from AppKit import NSURL, NSWorkspace
 
         url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(url))
@@ -706,6 +881,20 @@ class Whale(NSObject):
         its = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打开屏幕录制设置", "openScreenSettings:", "")
         its.setTarget_(self)
         m.addItem_(its)
+        m.addItem_(NSMenuItem.separatorItem())
+        itv = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "念出来（%s）" % ("开" if self.settings.get("朗读") else "关"), "speakMenu:", ""
+        )
+        itv.setTarget_(self)
+        m.addItem_(itv)
+        ith = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "全局热键 ⌥Space（%s）" % ("开" if self.settings.get("热键") else "关"), "hotkeyMenu:", ""
+        )
+        ith.setTarget_(self)
+        m.addItem_(ith)
+        ita = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打开辅助功能设置", "openAccessibility:", "")
+        ita.setTarget_(self)
+        m.addItem_(ita)
         m.addItem_(NSMenuItem.separatorItem())
         it1 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打个招呼", "ping:", "")
         it1.setTarget_(self)
@@ -799,6 +988,14 @@ def main():
 
     start_reply_server(lambda t: whale.performSelectorOnMainThread_withObject_waitUntilDone_("speak:", t, False))
 
+    whale.tts = TTS()
+    whale.hotkey = Hotkey(whale.begin_talk, whale.end_talk)
+    if whale.settings.get("热键"):
+        if not whale.hotkey.start():
+            log("全局热键没起来（缺辅助功能权限），只能按住鲸鱼说话")
+        elif not ax_trusted():
+            log("热键在跑，但系统可能还没给「辅助功能」权限")
+
     # 状态栏图标，方便退出
     item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
     item.button().setTitle_("🐋")
@@ -821,7 +1018,10 @@ def main():
         def run_mic():
             time.sleep(1.5)
             try:
-                r = Recorder(); r.start(); time.sleep(1.5); wav = r.stop()
+                r = Recorder()
+                r.start()
+                time.sleep(1.5)
+                wav = r.stop()
                 import wave as _w
                 n = 0
                 if wav:
