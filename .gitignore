@@ -1,0 +1,11 @@
+DSH-FishBuddy.app/
+.venv/
+__pycache__/
+*.pyc
+assets/whale.png
+assets/*.png
+!assets/README.md
+auth.log
+shot.log
+mic.log
+asr.log
