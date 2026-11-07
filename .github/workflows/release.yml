@@ -44,7 +44,7 @@ jobs:
       - name: 打 zip
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          mv DSH-FishBuddy.app DSH-FishBuddy.app 2>/dev/null || true
+          find . -name __pycache__ -type d -prune -exec rm -rf {} +
           zip -r "dsh-fishbuddy-mac-${TAG}.zip" \
             main.py build.sh install.sh requirements.txt requirements-dev.txt \
             README.md LICENSE CHANGELOG.md pyproject.toml \
