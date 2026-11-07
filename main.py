@@ -74,6 +74,10 @@ DEFAULT_SETTINGS = {
     },
     "尺寸": 132,          # 图标边长（像素）
     "弹幕": True,         # 她的回话同时以弹幕形式滑过屏幕
+    "弹幕字号": 30,       # 弹幕字号（px）
+    "弹幕字体": "bold",   # bold / rounded / pingfang
+    "识别提示": "",       # 语音识别的上下文词（逗号分隔），提高专有名词准确率
+    "断句秒": 1.3,        # 电话模式：安静多久算说完
     "音色": "system",     # system = 系统音色；edge = 晓晓（在线，更像真人）
     "电话模式": False,    # 连续对话：她说完自动继续听
     "陪看间隔": 20,
@@ -160,7 +164,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -418,7 +422,17 @@ class Danmaku(NSObject):
             self.label.setDrawsBackground_(False)
             self.label.setEditable_(False)
             self.label.setSelectable_(False)
-            self.label.setFont_(NSFont.boldSystemFontOfSize_(30))
+            size = float(self.parent.settings.get("弹幕字号") or 30)
+            fam = str(self.parent.settings.get("弹幕字体") or "bold")
+            font = None
+            try:
+                if fam == "rounded":
+                    font = NSFont.fontWithName_size_("PingFangSC-Semibold", size)
+                elif fam == "pingfang":
+                    font = NSFont.fontWithName_size_("PingFangSC-Regular", size)
+            except Exception:
+                font = None
+            self.label.setFont_(font or NSFont.boldSystemFontOfSize_(size))
             self.label.setTextColor_(NSColor.whiteColor())
             self.label.setAlignment_(0)   # 左对齐：文字一进屏就能看见
             self.label.setHasShadow_(True) if hasattr(self.label, "setHasShadow_") else None
@@ -457,8 +471,9 @@ class Danmaku(NSObject):
 class Speech:
     """SFSpeechRecognizer 包一层：录完的 wav → 一句话"""
 
-    def __init__(self):
+    def __init__(self, hint_words=""):
         from Speech import SFSpeechRecognizer
+        self.hint_words = hint_words
         self._SFSpeechRecognizer = SFSpeechRecognizer
         self.ready = False
         self.reason = "还没请求权限"
@@ -490,6 +505,13 @@ class Speech:
             NSURL.fileURLWithPath_(wav_path)
         )
         req.setShouldReportPartialResults_(False)
+        try:
+            hint = str((self.hint_words or "")).strip()
+            words = [w.strip() for w in hint.replace("，", ",").split(",") if w.strip()]
+            if words:
+                req.setContextualStrings_(words[:50])
+        except Exception:
+            pass
         try:
             req.setRequiresOnDeviceRecognition_(bool(on_device))
         except Exception:
@@ -646,6 +668,18 @@ class TTS:
                 os.unlink(path)
             except Exception:
                 pass
+            return False
+
+    @objc.python_method
+    def is_speaking(self):
+        try:
+            if self.proc is not None and self.proc.poll() is None:
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(self.synth.isSpeaking())
+        except Exception:
             return False
 
     @objc.python_method
@@ -1115,14 +1149,32 @@ class Whale(NSObject):
 
     # ---------- 电话模式 ----------
     @objc.python_method
-    def listen_utterance(self, max_wait=8.0, max_len=15.0, silence=1.1):
-        """等一句人话：有声音才开始算，安静 1.1 秒就收。返回 (wav, peak)"""
+    def listen_utterance(self, max_wait=8.0, max_len=15.0, silence=None):
+        """等一句人话。
+
+        比第一版稳的地方：
+          · 先量 0.5 秒环境噪声，阈值跟着环境走（不再用写死的 500）
+          · 要求连续有声 ≥ 0.3 秒才算「开始说话」，避免咳嗽/碰麦触发
+          · 断句时间可以在设置里调（默认 1.3 秒，边说边停顿不会被切断）
+        """
         import numpy as np
 
+        if silence is None:
+            silence = float(self.settings.get("断句秒") or 1.3)
         r = Recorder()
         r.start()
         t0 = time.time()
+        # 环境噪声
+        time.sleep(0.5)
+        with r.lock:
+            raw0 = b"".join(r.frames)
+        floor = 0.0
+        if raw0:
+            a0 = np.frombuffer(raw0, dtype=np.int16)
+            floor = float(np.percentile(np.abs(a0), 90)) if a0.size else 0.0
+        thresh = max(420.0, floor * 3.5)
         spoke = False
+        speak_start = 0.0
         last_loud = 0.0
         try:
             while time.time() - t0 < max_len:
@@ -1135,15 +1187,20 @@ class Whale(NSObject):
                 arr = np.frombuffer(tail, dtype=np.int16)
                 peak = float(np.abs(arr).max()) if arr.size else 0.0
                 now = time.time()
-                if peak > 500:
-                    spoke = True
+                if peak > thresh:
+                    if not spoke:
+                        spoke = True
+                        speak_start = now
                     last_loud = now
-                if spoke and now - last_loud > silence:
+                elif spoke and now - speak_start < 0.3:
+                    spoke = False   # 太短，当成噪声
+                if spoke and now - last_loud > silence and now - speak_start > 0.35:
                     break
                 if not spoke and now - t0 > max_wait:
                     break
         finally:
             wav, peak = r.stop()
+        log("电话：环境 %.0f 阈值 %.0f 说话=%.0f" % (floor, thresh, peak))
         return (wav, peak) if spoke else (None, peak)
 
     @objc.python_method
@@ -1181,7 +1238,12 @@ class Whale(NSObject):
             self.performSelectorOnMainThread_withObject_waitUntilDone_("uiHeard:", txt, False)
             self.reply_event.clear()
             self.reply_event.wait(90)
-            time.sleep(0.4)
+            # 等朗读真的说完再开口——不然会把自己的声音录进去
+            for _ in range(120):
+                if not self.tts or not self.tts.is_speaking():
+                    break
+                time.sleep(0.1)
+            time.sleep(0.3)
 
     def phoneMenu_(self, sender):
         on = self.toggle_phone()
@@ -1623,7 +1685,7 @@ class SettingsWindow(NSObject):
 
     @objc.python_method
     def build(self):
-        w, h = 500.0, 720.0
+        w, h = 520.0, 840.0
         self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, w, h),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
@@ -1752,6 +1814,54 @@ class SettingsWindow(NSObject):
         v.addSubview_(self.seg_voice)
         label("在线音色更像真人，但要联网", 80, y - 24, 360, size=11, gray=True)
 
+        # 10) 弹幕字号
+        y -= 38
+        label("弹幕字号", 20, y + 3, 80)
+        self.slider_dm = NSSlider.alloc().initWithFrame_(NSMakeRect(104, y - 2, 280, 26))
+        self.slider_dm.setMinValue_(16)
+        self.slider_dm.setMaxValue_(56)
+        self.slider_dm.setContinuous_(True)
+        self.slider_dm.setTarget_(self)
+        self.slider_dm.setAction_("danmakuSizeChanged:")
+        v.addSubview_(self.slider_dm)
+        self.lbl_dm = label("30 px", 392, y + 3, 80, size=11, gray=True)
+
+        # 11) 弹幕字体
+        y -= 36
+        label("弹幕字体", 20, y + 3, 80)
+        self.seg_font = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(104, y - 1, 300, 26))
+        self.seg_font.setSegmentCount_(3)
+        self.seg_font.setLabel_forSegment_("粗黑", 0)
+        self.seg_font.setLabel_forSegment_("圆体", 1)
+        self.seg_font.setLabel_forSegment_("苹方", 2)
+        self.seg_font.setTarget_(self)
+        self.seg_font.setAction_("danmakuFontChanged:")
+        v.addSubview_(self.seg_font)
+
+        # 12) 断句秒
+        y -= 38
+        label("断句等待", 20, y + 3, 80)
+        self.step_sil = NSStepper.alloc().initWithFrame_(NSMakeRect(110, y - 1, 19, 27))
+        self.step_sil.setMinValue_(0.6)
+        self.step_sil.setMaxValue_(2.5)
+        self.step_sil.setIncrement_(0.1)
+        self.step_sil.setValueWraps_(False)
+        self.step_sil.setTarget_(self)
+        self.step_sil.setAction_("silenceChanged:")
+        v.addSubview_(self.step_sil)
+        self.lbl_sil = label("1.3 秒", 138, y + 3, 90)
+        label("电话模式里安静多久算说完", 240, y + 3, 250, size=11, gray=True)
+
+        # 13) 识别提示
+        y -= 40
+        label("识别提示", 20, y + 3, 80)
+        self.fld_hint = NSTextField.alloc().initWithFrame_(NSMakeRect(104, y - 1, 300, 26))
+        self.fld_hint.setPlaceholderString_("人名、专有名词，逗号分隔")
+        self.fld_hint.setTarget_(self)
+        self.fld_hint.setAction_("hintChanged:")
+        v.addSubview_(self.fld_hint)
+        label("给识别器一点上下文，专有名词更准", 104, y - 26, 340, size=11, gray=True)
+
         # 关闭
         btn = NSButton.alloc().initWithFrame_(NSMakeRect(w - 120, 18, 100, 30))
         btn.setBezelStyle_(1)
@@ -1773,6 +1883,14 @@ class SettingsWindow(NSObject):
         self.cb_danmaku.setState_(1 if st.get("弹幕") else 0)
         self.cb_phone.setState_(1 if st.get("电话模式") else 0)
         self.seg_voice.setSelectedSegment_(1 if st.get("音色") == "edge" else 0)
+        self.slider_dm.setIntegerValue_(int(st.get("弹幕字号") or 30))
+        self.lbl_dm.setStringValue_("%d px" % int(st.get("弹幕字号") or 30))
+        self.seg_font.setSelectedSegment_(
+            {"bold": 0, "rounded": 1, "pingfang": 2}.get(st.get("弹幕字体"), 0)
+        )
+        self.step_sil.setDoubleValue_(float(st.get("断句秒") or 1.3))
+        self.lbl_sil.setStringValue_("%.1f 秒" % float(st.get("断句秒") or 1.3))
+        self.fld_hint.setStringValue_(str(st.get("识别提示") or ""))
         self.step.setIntegerValue_(int(st.get("陪看间隔") or 20))
         self.lbl_interval.setStringValue_("%d 秒" % int(st.get("陪看间隔") or 20))
         table = st.get("热键表") or {}
@@ -1815,6 +1933,31 @@ class SettingsWindow(NSObject):
         want = bool(sender.state())
         if want != bool(self.whale.settings.get("电话模式")):
             self.whale.toggle_phone()
+
+    def danmakuSizeChanged_(self, sender):
+        px = int(sender.integerValue())
+        self.lbl_dm.setStringValue_("%d px" % px)
+        self.whale.settings["弹幕字号"] = px
+        save_settings(self.whale.settings)
+
+    def danmakuFontChanged_(self, sender):
+        self.whale.settings["弹幕字体"] = {0: "bold", 1: "rounded", 2: "pingfang"}.get(
+            int(sender.selectedSegment()), "bold"
+        )
+        save_settings(self.whale.settings)
+
+    def silenceChanged_(self, sender):
+        v = round(float(sender.doubleValue()), 1)
+        self.lbl_sil.setStringValue_("%.1f 秒" % v)
+        self.whale.settings["断句秒"] = v
+        save_settings(self.whale.settings)
+
+    def hintChanged_(self, sender):
+        words = str(sender.stringValue() or "").strip()
+        self.whale.settings["识别提示"] = words
+        if self.whale.speech is not None:
+            self.whale.speech.hint_words = words
+        save_settings(self.whale.settings)
 
     def voiceChanged_(self, sender):
         self.whale.settings["音色"] = "edge" if int(sender.selectedSegment()) == 1 else "system"
@@ -2002,7 +2145,7 @@ def main():
     whale.bubble = Bubble.alloc().initWithParent_(whale)
     whale.danmaku = Danmaku.alloc().initWithParent_(whale)
 
-    speech = Speech()
+    speech = Speech(hint_words=str(whale.settings.get("识别提示") or ""))
     whale.speech = speech
 
     def on_auth(status):
