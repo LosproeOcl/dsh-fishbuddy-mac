@@ -154,7 +154,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -168,6 +168,36 @@ def log(*a):
             f.write("%s %s\n" % (time.strftime("%H:%M:%S"), line))
     except Exception:
         pass
+
+
+def mic_status():
+    """0 未决定 / 1 受限 / 2 拒绝 / 3 已授权（TCC）"""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+
+        return int(AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio))
+    except Exception:
+        return -1
+
+
+def request_mic():
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+
+        AVCaptureDevice.requestAccessForMediaType_completionHandler_(AVMediaTypeAudio, lambda ok: None)
+    except Exception as e:
+        log("申请麦克风失败", e)
+
+
+def input_device_name():
+    try:
+        import sounddevice as sd
+
+        idx = sd.default.device[0]
+        info = sd.query_devices(idx)
+        return str(info.get("name") or "")
+    except Exception:
+        return ""
 
 
 def load_settings():
@@ -275,7 +305,7 @@ class Recorder:
             cur = float(abs(a).max()) if a.size else 0.0
             gain = 1.0
             if 0 < cur < 26000:
-                gain = min(8.0, 26000.0 / cur)
+                gain = min(16.0, 26000.0 / max(cur, 1.0))
             if gain > 1.0:
                 a = np.clip(a * gain, -32768, 32767)
             raw = a.astype(np.int16).tobytes()
@@ -713,7 +743,14 @@ class Whale(NSObject):
             return
         if not self.speech_ok():
             return
+        st = mic_status()
+        if st == 2:
+            self.bubble.show_text("麦克风权限被拒了：系统设置 → 隐私与安全性 → 麦克风 → 勾「大肥鱼」", 6, error=True)
+            return
+        if st == 0:
+            request_mic()
         try:
+            self.rec = Recorder()
             self.rec.start()
             self.listening = True
             self.set_state("listen")
@@ -996,6 +1033,11 @@ class Whale(NSObject):
             self.performSelectorOnMainThread_withObject_waitUntilDone_("uiInfo:", msg, False)
 
         threading.Thread(target=run, daemon=True).start()
+
+    def recSelfTest_(self, sender):
+        self.begin_talk()
+        time.sleep(3.0)
+        self.end_talk()
 
     def testMic_(self, sender):
         self.test_mic()
@@ -1416,6 +1458,40 @@ class ReplyServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def mic_probe(seconds=2.0):
+    """两种录法各测一次，排查「有权限但全是 0」"""
+    import numpy as np
+    import sounddevice as sd
+
+    out = {"device": input_device_name(), "status": mic_status()}
+    # A. sd.rec 阻塞式
+    try:
+        a = sd.rec(int(seconds * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+        sd.wait()
+        out["rec_peak"] = int(np.abs(a).max()) if a.size else -1
+    except Exception as e:
+        out["rec_err"] = str(e)
+    # B. InputStream 回调（挂件实际用的）
+    try:
+        buf = []
+        st = sd.InputStream(
+            samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=1024,
+            callback=lambda indata, frames, t, status: buf.append(bytes(indata)),
+        )
+        st.start()
+        import time as _t
+        _t.sleep(seconds)
+        st.stop()
+        st.close()
+        raw = b"".join(buf)
+        arr = np.frombuffer(raw, dtype=np.int16) if raw else np.zeros(0, dtype=np.int16)
+        out["stream_peak"] = int(np.abs(arr).max()) if arr.size else -1
+        out["stream_bytes"] = len(raw)
+    except Exception as e:
+        out["stream_err"] = str(e)
+    return out
+
+
 def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=None, state=None):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -1440,6 +1516,14 @@ def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=Non
             if path == "/show" and on_show:
                 on_show()
                 return self._send({"ok": True, "说": "挂件出来了"})
+            if path == "/rec-test":
+                r = Recorder()
+                r.start()
+                time.sleep(2.0)
+                wav, peak = r.stop()
+                return self._send({"ok": True, "peak": peak, "wav": wav})
+            if path == "/mic-test":
+                return self._send({"ok": True, **mic_probe()})
             if path == "/state":
                 return self._send({"ok": True, **(state() if state else {})})
             self._send({"ok": True, "说": "鱼搭子在"})
@@ -1516,6 +1600,8 @@ def main():
             "watching": bool(whale.watching),
             "形象": whale.settings.get("形象"),
             "挂件": whale.settings.get("挂件"),
+            "麦克风": mic_status(),
+            "输入设备": input_device_name(),
         },
     )
 
@@ -1586,6 +1672,12 @@ def main():
     whale.apply_display_mode(os.environ.get("FISH_TEST_MODE") or whale.settings.get("形象", "image"))
     if not whale.settings.get("挂件", True):
         whale.apply_widget_enabled(False)
+
+    if os.environ.get("FISH_TEST_REC"):
+        def rec_hook(t0=time.time()):
+            time.sleep(2.0)
+            whale.performSelectorOnMainThread_withObject_waitUntilDone_("recSelfTest:", None, False)
+        threading.Thread(target=rec_hook, daemon=True).start()
 
     if os.environ.get("FISH_TEST_SETTINGS"):
         def run_settings():
