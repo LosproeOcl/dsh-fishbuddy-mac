@@ -1,78 +1,74 @@
-# DSH FishBuddy for macOS
+# DSH 大肥鱼 · macOS 挂件
 
-> 桌面上的 AI 伴侣挂件：按住说话、陪你看屏幕、把回话念出来。
-> 与 [DeepSeek Harness](https://www.deepseek.com/) 通过本地回环协议通信，所有数据不出本机（在线音色除外）。
+> 桌面上的 AI 伴侣：按住说话、陪你看屏幕、把回话念出来。
+> 通过本机回环协议与 [DeepSeek Harness](https://www.deepseek.com/) 通信，数据不出本机（在线音色除外）。
 
 [![CI](https://github.com/LosproeOcl/dsh-fishbuddy-mac/actions/workflows/ci.yml/badge.svg)](https://github.com/LosproeOcl/dsh-fishbuddy-mac/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/LosproeOcl/dsh-fishbuddy-mac?display_name=tag)](https://github.com/LosproeOcl/dsh-fishbuddy-mac/releases)
 [![License: MIT](https://img.shields.io/badge/code%20license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey)](#系统要求)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.12-blue)](requirements.txt)
 
+**简体中文** · [English](README.en.md)
+
 <p align="center">
-  <img src="assets/mascot.png" width="140" alt="鲸鱼娘">
+  <img src="assets/mascot.png" width="140" alt="看板娘">
   <img src="assets/whale.png" width="140" alt="官方鲸鱼">
 </p>
 
 ---
 
-## Overview
+## 简介
 
-DSH FishBuddy is a native macOS companion widget for DeepSeek Harness. It behaves like a
-desktop pet that is also a voice front-end for your agent sessions:
+DSH 大肥鱼是一个原生 macOS 桌面挂件，作为 DeepSeek Harness 的语音前端：
 
-- **Talk to it** — hold the icon (or a global hotkey) and speak; on-device speech recognition
-  turns it into text and injects it into your bound session.
-- **It talks back** — the last message of a turn is pushed back and shown as a frosted bubble,
-  optionally as a scrolling danmaku line, and read aloud by a system or neural voice.
-- **It watches with you** — in watch mode it periodically screenshots the screen, OCRs the
-  subtitle area, and sends both frames and captured lines as context.
-- **Hands-free calling** — phone mode chains listen → recognize → send → wait → speak in a loop.
+- **你说，它听** —— 按住图标（或全局热键）说话，本机语音识别转成文字，投递到你绑定的会话
+- **它说，你听** —— 一轮结束时把最后一段回话推回来：磨砂气泡、可选弹幕、可选朗读
+- **它陪你看** —— 陪看模式下定时截屏，用 Vision OCR 抽画面字幕区的台词，和截图一起作为上下文
+- **它认得你的屏幕** —— 截屏只在看到字幕时送字幕；送图统一走 `/hands/frame`
 
-Everything is local: the widget talks to the plugin over `127.0.0.1:8777/8778`. The only
-optional outbound traffic is the `edge-tts` voice (`zh-CN-XiaoxiaoNeural`), which can be
-switched off in favour of the on-device synthesizer.
+全部通信走 `127.0.0.1:8777 / 8778`。唯一可能的外网流量是 `edge-tts` 在线音色，可在设置里切回系统音色。
 
-## Features
+## 功能
 
-| Area | Capability | Permission |
+| 模块 | 能力 | 所需权限 |
 |---|---|---|
-| Voice input | Hold-to-talk, global hotkeys, VAD-based phone mode | Microphone, Speech Recognition |
-| Voice output | System voice (highest quality installed) or Edge neural voice | Network (edge only) |
-| Visuals | Three personas (official whale / minimal dot / mascot), 48–320 px size slider | — |
-| Reply surface | Frosted-glass bubble, danmaku line (font family + 16–56 px size), edge-triggered TTS | — |
-| Watch mode | Periodic screenshots, Vision OCR of the subtitle band, context injection | Screen Recording |
-| Automation | Four configurable global hotkeys, per-action conflict detection | Accessibility (optional) |
-| Settings | Native settings window, persisted to `~/.dsh/fishbuddy-mac.json` | — |
+| 语音输入 | 按住说话、全局热键、按住即录 | 麦克风、语音识别 |
+| 语音输出 | 系统音色（自动挑最高质量）或 Edge 在线神经音色 | 网络（仅在线音色） |
+| 形象 | 官方鲸鱼 / 极简圆点 / 看板娘，48–320 px 滑条 | — |
+| 回话呈现 | 磨砂气泡、弹幕（字体族 + 16–56 px 字号）、朗读 | — |
+| 陪看 | 定时截屏、Vision OCR 抽台词、上下文注入 | 屏幕录制 |
+| 自动化 | 四个可配置全局热键，冲突检测（系统快捷键 + 动作互撞） | 辅助功能（可选） |
+| 设置 | 原生设置窗口，持久化到 `~/.dsh/fishbuddy-mac.json` | — |
 
-### Personas
+### 三种形象
 
-| Official whale | Minimal dot | Mascot |
+| 官方鲸鱼 | 极简圆点 | 看板娘 |
 |---|---|---|
 | ![](assets/whale.png) | ![](assets/dot.png) | ![](assets/mascot.png) |
-| DeepSeek brand mark (trademark of DeepSeek) | Flat dot, no glow | Whale-girl fan art (CC BY-NC-SA 4.0) |
+| DeepSeek 品牌标志（商标归 DeepSeek） | 平涂圆点，无光晕 | 鲸鱼娘同人图（CC BY-NC-SA 4.0） |
 
-> The mascot art is **not** MIT and **not** for commercial use. See [THIRD-PARTY.md](THIRD-PARTY.md).
+> 看板娘与官方鲸鱼**不属于 MIT**，也不可商用；详见 [THIRD-PARTY.md](THIRD-PARTY.md)。
 
-## Requirements
+## 系统要求
 
-- macOS 13 Ventura or later (tested on macOS 26, Apple Silicon)
-- Python 3.9+ (CI covers 3.9 and 3.12; developed against 3.14)
-- DeepSeek Harness with plugin support
-- ~200 MB disk for the virtual environment
+- macOS 13 Ventura 及以上（在 macOS 26 / Apple Silicon 实测）
+- Python 3.9+（CI 覆盖 3.9 与 3.12；开发环境为 3.14）
+- 已安装 DeepSeek Harness，且支持插件
+- 约 200 MB 磁盘（虚拟环境）
 
-## Installation
+## 安装
 
 ```sh
 git clone https://github.com/LosproeOcl/dsh-fishbuddy-mac.git
 cd dsh-fishbuddy-mac
 
-./install.sh                 # creates .venv, installs deps, builds DSH-FishBuddy.app
+./install.sh                 # 建 .venv、装依赖、生成 DSH-FishBuddy.app
 dsh plugin --profile desktop add ./plugin
 open DSH-FishBuddy.app
 ```
 
-Manual equivalent:
+手动等价步骤：
 
 ```sh
 python3 -m venv .venv
@@ -80,23 +76,23 @@ python3 -m venv .venv
 ./build.sh .venv/bin/python
 ```
 
-> Always launch via `open DSH-FishBuddy.app`. macOS TCC (microphone, speech, screen recording)
-> binds permissions to the app bundle identity; running `python main.py` directly cannot obtain them.
+> 必须用 `open DSH-FishBuddy.app` 启动。macOS 的 TCC 权限（麦克风 / 语音识别 / 屏幕录制）绑定在
+> App Bundle 身份上，直接 `python main.py` 拿不到。
 
-## Permissions
+## 权限
 
-| Permission | Used by | Without it |
+| 权限 | 用于 | 缺失时表现 |
 |---|---|---|
-| Microphone | Hold-to-talk, phone mode | Bubble reports that the mic cannot be opened |
-| Speech Recognition | All transcription | Bubble asks you to enable it in System Settings |
-| Screen Recording | Watch mode, “take a look” | Bubble offers a shortcut to the settings pane |
-| Accessibility | Global hotkeys | Hotkeys silently do nothing; the icon still works |
+| 麦克风 | 按住说话 | 气泡提示无法打开麦克风 |
+| 语音识别 | 所有转写 | 气泡提示去系统设置开启 |
+| 屏幕录制 | 陪看、让她看一眼 | 气泡提供跳转设置的快捷入口 |
+| 辅助功能 | 全局热键 | 热键无反应；图标仍可用 |
 
-After changing permissions, quit and relaunch the widget.
+修改权限后需要**退出并重新启动**挂件。
 
-## Configuration
+## 配置
 
-### Plugin (`~/.dsh/fishbuddy-mac-plugin.json`)
+### 插件（`~/.dsh/fishbuddy-mac-plugin.json`）
 
 ```json
 {
@@ -107,122 +103,122 @@ After changing permissions, quit and relaunch the widget.
 }
 ```
 
-The same values are editable in **DSH → Settings → 大肥鱼**, which additionally offers
-*Launch widget*, *Open widget settings*, *Show* and *Hide*.
+这些值也可以在 **DSH → 设置 → 大肥鱼** 里改，那一页另有「启动挂件 / 打开挂件设置 / 露头 / 藏起来 / 自检」。
 
-### Widget (`~/.dsh/fishbuddy-mac.json`)
+### 挂件（`~/.dsh/fishbuddy-mac.json`）
 
-| Key | Default | Meaning |
+| 键 | 默认 | 含义 |
 |---|---|---|
-| `挂件` | `true` | Show the icon (menu bar item always present) |
+| `挂件` | `true` | 是否显示图标（菜单栏项始终存在） |
 | `形象` | `image` | `image` / `minimal` / `mascot` |
-| `尺寸` | `132` | Icon edge length in px (48–320) |
-| `朗读` | `true` | Speak replies aloud |
-| `音色` | `system` | `system` or `edge` (neural, online) |
-| `麦克风` | `null` | Input device index; `null` = system default |
-| `弹幕` | `true` | Show replies as danmaku |
-| `弹幕字号` | `30` | Danmaku font size (16–56 px) |
-| `弹幕字体` | `""` | Font family; empty = system bold |
-| `电话模式` | `false` | Hands-free conversation loop |
-| `断句秒` | `1.3` | Silence before an utterance is considered finished |
-| `识别提示` | `""` | Comma-separated contextual words for the recognizer |
-| `热键表` | see below | Per-action key bindings |
+| `尺寸` | `132` | 图标边长（48–320 px） |
+| `朗读` | `true` | 是否朗读回话 |
+| `音色` | `system` | `system` 或 `edge`（在线神经音色） |
+| `麦克风` | `null` | 输入设备序号；`null` = 系统默认 |
+| `弹幕` | `true` | 是否以弹幕呈现回话 |
+| `弹幕字号` | `30` | 弹幕字号（16–56 px） |
+| `弹幕字体` | `""` | 字体族；空 = 系统粗体 |
+| `识别提示` | `""` | 逗号分隔的上下文词，提升专有名词准确率 |
+| `陪看间隔` | `20` | 陪看截屏间隔（秒） |
+| `热键表` | 见下 | 每个动作的按键绑定 |
 
-Default hotkeys: `⌥Space` talk, `⌥P` watch toggle, `⌥L` look now, `⌥S` settings.
-Bindings are validated: modifier required, system shortcuts and duplicate bindings rejected.
+默认热键：`⌥Space` 说话、`⌥P` 陪看开关、`⌥L` 看一眼、`⌥S` 设置。
+绑定会校验：必须带修饰键；撞系统快捷键或与其它动作重复会被拒绝并提示原因。
 
-## Architecture
+## 架构
 
 ```
-┌────────────────────────────┐        HTTP (loopback)        ┌──────────────────────────┐
-│  DSH-FishBuddy.app         │                               │  DSH plugin              │
-│  (PyObjC, accessory app)   │  POST 8777/hands/say          │  dsh-fishbuddy-mac       │
-│                            │  POST 8777/hands/frame   ───► │                          │
-│  • NSWindow overlay        │  POST 8777/hands/subtitle     │  • session delivery      │
-│  • SFSpeechRecognizer      │  GET  8777/hands/ping         │  • reply capture         │
-│  • AVSpeechSynthesizer     │                               │  • settings page         │
-│  • Vision OCR              │  POST 8778/hands/reply   ◄─── │  • widget controls       │
-│  • sounddevice + numpy     │  POST 8778/settings|show|hide │                          │
-└────────────────────────────┘                               └──────────────────────────┘
-                                                                    │
-                                                                    ▼
-                                                            DSH session controller
+┌────────────────────────────┐        本机 HTTP            ┌──────────────────────────┐
+│  DSH-FishBuddy.app         │                              │  DSH 插件                │
+│  （PyObjC，附件型 App）     │  POST 8777/hands/say         │  dsh-fishbuddy-mac       │
+│                            │  POST 8777/hands/frame  ───► │                          │
+│  • NSWindow 悬浮层          │  POST 8777/hands/subtitle    │  • 会话投递              │
+│  • SFSpeechRecognizer      │  GET  8777/hands/ping        │  • 回话捕获（过滤思考）   │
+│  • AVSpeechSynthesizer     │                              │  • 设置页                │
+│  • Vision OCR              │  POST 8778/hands/reply  ◄─── │  • 挂件控制              │
+│  • sounddevice + numpy     │  POST 8778/settings|show|hide│                          │
+└────────────────────────────┘                              └──────────────────────────┘
+                                                                     │
+                                                                     ▼
+                                                             DSH 会话控制器
 ```
 
-- The widget owns audio capture, recognition, rendering and OS integrations.
-- The plugin owns session binding, message delivery, reply capture (filtering out reasoning
-  segments) and the settings UI.
+- **挂件**负责音频采集、识别、渲染与系统集成
+- **插件**负责会话绑定、消息投递、回话捕获、设置界面
 
-## Protocol
+## 协议
 
-| Direction | Endpoint | Payload |
+| 方向 | 接口 | 负载 |
 |---|---|---|
-| widget → plugin | `POST /hands/say` | `{"text": "…"}` |
-| widget → plugin | `POST /hands/frame` | `{"图片": "<base64>", "存档": 0\|1, "立即": 0\|1, "来源": "陪看"}` |
-| widget → plugin | `POST /hands/subtitle` | `{"lines": ["…"]}` |
-| widget → plugin | `GET /hands/ping` | — |
-| plugin → widget | `POST /hands/reply` | `{"text": "…", "session": "session-…"}` |
-| plugin → widget | `POST /settings` · `/show` · `/hide` | — |
-| plugin → widget | `GET /state` | version, persona, mic status, watching |
+| 挂件 → 插件 | `POST /hands/say` | `{"text": "…"}` |
+| 挂件 → 插件 | `POST /hands/frame` | `{"图片": "<base64>", "存档": 0\|1, "立即": 0\|1, "来源": "陪看"}` |
+| 挂件 → 插件 | `POST /hands/subtitle` | `{"lines": ["…"]}` |
+| 挂件 → 插件 | `GET /hands/ping` | — |
+| 插件 → 挂件 | `POST /hands/reply` | `{"text": "…", "session": "session-…"}` |
+| 插件 → 挂件 | `POST /settings` · `/show` · `/hide` | — |
+| 插件 → 挂件 | `GET /state` | 版本、形象、麦克风状态、陪看状态 |
 
-The plugin prefixes the most recent 30 s of captured subtitles to outgoing utterances, so the
-agent knows what is happening on screen without extra turns.
+插件会把最近 30 秒抽到的台词拼在你说话的前面，这样 agent 不必多花一轮就能知道画面在演什么。
 
-## Development
+## 开发
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 
-.venv/bin/ruff check .          # lint
-.venv/bin/python -m pytest -q   # smoke tests
-./build.sh .venv/bin/python     # build the .app
-python tools/make_assets.py     # regenerate assets (needs cairosvg)
+.venv/bin/ruff check .          # 静态检查
+.venv/bin/python -m pytest -q   # 冒烟测试
+./build.sh .venv/bin/python     # 构建 .app
+python tools/make_assets.py     # 重新生成素材（需要 cairosvg）
 ```
 
-Layout:
+目录：
 
 ```
-main.py                 widget: windows, audio, ASR, OCR, TTS, danmaku, settings, server
-plugin/                 DSH plugin: session bridge, settings UI, diagnostics
-tools/make_assets.py    asset generation (whale from Twemoji SVG, dot)
-tests/                  smoke tests
-.github/workflows/      CI (ruff + pytest + build) and Release (zip + sha256)
+main.py                 挂件：窗口、音频、识别、OCR、TTS、弹幕、设置、本地服务
+plugin/                 DSH 插件：会话桥接、设置页、自检
+tools/make_assets.py    素材生成（鲸鱼由 Twemoji SVG 转出，圆点自绘）
+tests/                  冒烟测试
+.github/workflows/      CI（ruff + pytest + 构建）与 Release（打包 + 校验和）
 ```
 
-Debug switches (read from the environment; use `launchctl setenv` before `open`):
+调试开关（环境变量，需 `launchctl setenv` 后 `open`）：
 
-| Variable | Effect |
+| 变量 | 作用 |
 |---|---|
-| `FISH_TEST_SHOT=1` | Capture a screenshot at startup to verify Screen Recording |
-| `FISH_TEST_MIC=1` | Record 1.5 s at startup and report frame count |
-| `FISH_TEST_WAV=/p.wav` | Transcribe a file and log the result |
-| `FISH_TEST_SETTINGS=1` | Open the settings window at startup |
-| `FISH_TEST_MODE=minimal` | Force a persona without persisting it |
-| `FISH_TEST_REC=1` | Run one main-thread recording cycle |
+| `FISH_TEST_SHOT=1` | 启动时截一张图，验证屏幕录制权限 |
+| `FISH_TEST_MIC=1` | 启动时录 1.5 秒并记录帧数 |
+| `FISH_TEST_WAV=/p.wav` | 启动时转写指定音频并记录结果 |
+| `FISH_TEST_SETTINGS=1` | 启动时直接打开设置窗口 |
+| `FISH_TEST_MODE=minimal` | 强制使用某形象（不写回配置） |
+| `FISH_TEST_REC=1` | 在主线程跑一次录音自测 |
 
-## Release
+## 发版
 
-1. Update `VERSION` in `main.py`, add a `CHANGELOG.md` entry.
+1. 更新 `main.py` 的 `VERSION`，在 `CHANGELOG.md` 记一笔
 2. `git tag v0.x.y && git push origin v0.x.y`
-3. The release workflow validates tag ↔ version, runs tests, builds a zip with a SHA-256
-   checksum, and publishes a GitHub Release.
+3. Release Workflow 会校验 tag 与版本一致、跑测试、打包 zip 并附 SHA-256，发布 Release
 
-## Troubleshooting
+## 故障排查
 
-| Symptom | Cause | Fix |
+| 现象 | 原因 | 处理 |
 |---|---|---|
-| `No speech detected` | Input level too low (Bluetooth headset) | Pick another microphone in settings, or move closer |
-| Recognition drifts | Proper nouns unknown to the model | Add them under *识别提示* |
-| Screenshots are black | Screen Recording denied | Toggle the permission, relaunch |
-| Hotkeys do nothing | Accessibility denied | Enable it for “大肥鱼”, relaunch |
-| Widget invisible | Hidden via plugin, or on another Space | Right-click the menu bar icon → Settings → show; the window now joins all Spaces |
-| Plugin responses stale | DSH caches plugin modules | The entry uses a cache-busting dynamic import; re-enable the plugin |
+| `No speech detected` | 输入电平过低（蓝牙耳机常见） | 设置里换麦克风，或靠近麦克风说话 |
+| 专有名词总识别错 | 模型不认识 | 在「识别提示」里补词 |
+| 截图为黑 | 屏幕录制被拒 | 重新授权并重启挂件 |
+| 热键无效 | 辅助功能被拒 | 授权「大肥鱼」后重启 |
+| 挂件看不见 | 被插件隐藏，或窗口在其它 Space | 菜单栏图标 → 设置 → 显示；窗口已设为加入所有 Space |
+| 插件改了没生效 | DSH 会缓存插件模块 | 插件入口使用带时间戳的动态 import，重新启用即可 |
 
-## License
+## 隐私与安全
 
-Code (widget and plugin) is [MIT](LICENSE).
+- 语音、截图、字幕只在本机内存与 `~/.dsh` 下流转；截图落盘在 `~/.dsh/fishbuddy-frames`
+- 插件路由经过 DSH 的信任栅栏（`connection.requestRejection`），并额外做回环 Host 兜底
+- 唯一外发：选择「晓晓 · 在线」时，文本会发给 Microsoft Edge 语音服务
 
-Artwork is **not** MIT: the official whale belongs to DeepSeek (trademark, unofficial project);
-the mascot is CC BY-NC-SA 4.0 (non-commercial). Details in [THIRD-PARTY.md](THIRD-PARTY.md).
-Replace `assets/whale.png` / `assets/mascot.png` to redistribute under your own terms.
+## 许可
+
+代码（挂件 + 插件）采用 [MIT](LICENSE)。
+
+素材**不属于 MIT**：官方鲸鱼标志归 DeepSeek 所有（本项目为非官方项目）；看板娘为 CC BY-NC-SA 4.0（禁止商用）。
+详见 [THIRD-PARTY.md](THIRD-PARTY.md)。要再分发请替换 `assets/whale.png` 与 `assets/mascot.png`。
