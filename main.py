@@ -154,7 +154,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -1536,6 +1536,9 @@ def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=Non
             if path == "/show" and on_show:
                 on_show()
                 return self._send({"ok": True, "说": "挂件出来了"})
+            if path == "/hide" and on_hide:
+                on_hide()
+                return self._send({"ok": True, "说": "挂件藏起来了"})
             n = int(self.headers.get("content-length") or 0)
             raw = self.rfile.read(n) if n else b"{}"
             try:
@@ -1670,7 +1673,9 @@ def main():
         threading.Thread(target=run_test, daemon=True).start()
 
     whale.apply_display_mode(os.environ.get("FISH_TEST_MODE") or whale.settings.get("形象", "image"))
-    if not whale.settings.get("挂件", True):
+    if whale.settings.get("挂件", True):
+        whale.apply_widget_enabled(True)      # 显式露头一次，避免"配置勾了却没显示"
+    else:
         whale.apply_widget_enabled(False)
 
     if os.environ.get("FISH_TEST_REC"):

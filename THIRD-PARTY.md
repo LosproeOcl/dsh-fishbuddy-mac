@@ -1,13 +1,22 @@
 # 第三方素材与许可
 
-## assets/whale.png、assets/whale.svg —— Twemoji
+## assets/whale.png —— DeepSeek 标志（鲸鱼）
 
-- 来源：[Twemoji](https://github.com/jdecked/twemoji) 的 `1f433`（spouting whale）
-- 版权：Copyright 2020 Twitter, Inc and other contributors
-- 许可：[CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-- 我们对它做的改动：等比缩放并加了透明内边距（`tools/make_assets.py`）
+- 来源：DeepSeek 官方网站 `https://www.deepseek.com/favicon.ico`（官方品牌标志中的鲸鱼）
+- 权利：**DeepSeek 商标与品牌标识归杭州深度求索人工智能基础技术研究有限公司所有**，
+  **不属于本项目的 MIT 许可范围**，也不是可自由再分发的开源素材。
+- 我们只做了等比缩放与透明留白，没有改动图形本身。
+- 用途限制：本项目是**非官方的个人桌面挂件**，使用该图是把它当作"大肥鱼"的形象；
+  不代表 DeepSeek 官方，也没有获得授权或背书。
+- 如果你要再分发/商用：请自行确认商标使用合规，或把 `assets/whale.png` 换成你自己的图
+  （挂件在缺图时会显示蓝色圆底，代码不受影响）。
 
-CC-BY 4.0 要求署名与许可声明 —— 本文件与 README 的「许可与致谢」即为此。
+> 之前版本用的是 Twemoji 🐳（CC-BY 4.0）；如果你更想避开商标问题，可以从 git 历史里取回那一版，
+> 或直接放一张自己的图。
+
+## assets/whale.svg
+
+Twemoji 的原始 SVG 留档（CC-BY 4.0，同上），仅作参考。
 
 ## assets/dot.png
 

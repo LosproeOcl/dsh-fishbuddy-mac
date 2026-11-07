@@ -15,7 +15,7 @@
 
 > 这是把「桌面上养一只会陪你说话的鲸鱼」在 macOS 上**从零做一套**：挂件（本仓库）+ 它自己的 DSH 插件（`plugin/`）。
 > 不依赖原版 `dsh-fish-buddy`，也不含它的任何代码或图片素材。
-> 形象用的是 [Twemoji](https://github.com/jdecked/twemoji) 的 🐳（CC-BY 4.0，见 [THIRD-PARTY.md](THIRD-PARTY.md)）。
+> 形象用的是 DeepSeek 的标志鲸鱼（**非官方项目**，商标归 DeepSeek；详见 [THIRD-PARTY.md](THIRD-PARTY.md)）。
 
 ```
         ┌─────────────────┐
@@ -174,7 +174,7 @@ macOS 不提供"查询所有 App 占用的快捷键"的接口，所以这层是*
 | 素材形象 | 极简圆点 |
 |---|---|
 | ![](assets/whale.png) | ![](assets/dot.png) |
-| 128px 的鲸鱼（Twemoji 🐳，CC-BY 4.0） | 36px 的纯色小圆点，**没有光晕**；说话时会轻微放大 |
+| 128px 的鲸鱼（DeepSeek 标志，见下方说明） | 36px 的纯色小圆点（DeepSeek 蓝 #4D6BFE），**没有光晕**；说话时会轻微放大 |
 
 想换成自己的图就覆盖 `assets/whale.png` / `assets/dot.png`；
 `:python tools/make_assets.py` 会重新生成圆点（鲸鱼需要 `cairosvg` 从 `assets/whale.svg` 转）。
@@ -279,8 +279,8 @@ assets/                  whale.png / dot.png / whale.svg（都是自己画的）
 
 本仓库的代码（挂件 + 插件）用 [MIT](LICENSE)。
 
-形象素材来自 [Twemoji](https://github.com/jdecked/twemoji) 🐳 `1f433`，
-版权归 Twitter, Inc and other contributors，按 [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/) 使用；
-我们对它做了缩放与留白。完整声明见 [THIRD-PARTY.md](THIRD-PARTY.md)。
+**形象不是 MIT**：`assets/whale.png` 是 DeepSeek 官方标志里的鲸鱼，商标与品牌归 DeepSeek 所有，
+本项目**不是官方项目**、也没有获得授权。详见 [THIRD-PARTY.md](THIRD-PARTY.md)。
+不想承担商标风险就换掉这张图（缺图会显示蓝底圆），代码不受影响。
 
 不含原项目 [dsh-fish-buddy](https://github.com/Yuuyuko-uu/dsh-fish-buddy)（插件许可 1.2）的任何代码与图片素材。
