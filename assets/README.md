@@ -1,6 +1,15 @@
-# 放你自己的形象
+# 形象素材
 
-把一张正方形的鲸鱼（或任意角色）PNG 放这里，命名 `whale.png`，带透明通道最好。
-没有也能跑：会显示一个蓝色圆底。
+`whale.png`、`dot.png` / `whale.svg` 都是**本仓库自己画的**（`tools/make_assets.py`，MIT），
+可以随便改、随便用。
 
-（原项目 dsh-fish-buddy 的角色图 / 气泡框不单独授权二次使用，所以本仓库不带图。）
+改形象：把一张正方形 PNG 命名成 `whale.png` 覆盖掉就行（带透明通道最好）。
+极简模式用的是 `dot.png`。
+
+重新生成：
+
+```sh
+python tools/make_assets.py
+```
+
+> 原项目 dsh-fish-buddy 的角色图 / 气泡框**不单独授权二次使用**，所以这个仓库不带它们的任何素材。

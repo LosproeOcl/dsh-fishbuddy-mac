@@ -6,10 +6,12 @@ __pycache__/
 .pytest_cache/
 *.zip
 *.sha256
-assets/whale.png
-assets/*.png
-!assets/README.md
+# 原作者素材不二次分发（本地自用留着，别进仓库）
+assets/鱼搭子.png
+assets/气泡框.png
 auth.log
 shot.log
 mic.log
 asr.log
+fishbuddy.log
+shot.png

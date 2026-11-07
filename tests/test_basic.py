@@ -29,3 +29,19 @@ def test_payload_shapes():
     # 插件要的两个键名，写死在这里防止手滑改掉
     assert main.SEND_URL.endswith("/hands/say")
     assert main.REPLY_PORT == 8778
+
+
+def test_hotkey_names():
+    assert main.key_name(49, 1 << 19) == "⌥Space"
+    assert main.key_name(49, (1 << 20) | (1 << 17)) == "⇧⌘Space"
+
+
+def test_hotkey_conflicts():
+    assert main.hotkey_conflict(49, 1 << 20) == "和系统快捷键「Spotlight 搜索」撞了"
+    assert main.hotkey_conflict(49, 1 << 19) is None
+    assert "⌘ / ⌥ / ⌃" in main.hotkey_conflict(49, 0)
+
+
+def test_settings_has_new_keys():
+    for k in ("挂件", "形象", "键", "修饰"):
+        assert k in main.DEFAULT_SETTINGS

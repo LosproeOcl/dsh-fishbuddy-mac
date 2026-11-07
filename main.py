@@ -29,6 +29,7 @@ from AppKit import (
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSBezierPath,
+    NSButton,
     NSColor,
     NSFont,
     NSImage,
@@ -39,12 +40,17 @@ from AppKit import (
     NSMenuItem,
     NSObject,
     NSPanel,
+    NSSegmentedControl,
     NSStatusBar,
+    NSStepper,
     NSTextField,
     NSVariableStatusItemLength,
     NSView,
+    NSWindow,
     NSWindowStyleMaskBorderless,
+    NSWindowStyleMaskClosable,
     NSWindowStyleMaskNonactivatingPanel,
+    NSWindowStyleMaskTitled,
 )
 from Foundation import NSURL, NSLocale, NSTimer
 
@@ -53,21 +59,82 @@ REPLY_PORT = 8778
 DSH_HOME = os.environ.get("DSH_HOME") or os.path.expanduser("~/.dsh")
 CONFIG_PATH = os.path.join(DSH_HOME, "fish-buddy-config.json")
 SETTINGS_PATH = os.path.join(DSH_HOME, "fishbuddy-mac.json")
-DEFAULT_SETTINGS = {"朗读": True, "热键": True, "陪看间隔": 20}
+DEFAULT_SETTINGS = {
+    "挂件": True,          # 桌面上有没有那只鲸鱼（关掉只留菜单栏）
+    "形象": "image",       # image = 素材形象；minimal = 极简圆点
+    "朗读": True,
+    "热键": True,
+    "键": 49,              # 49 = space
+    "修饰": 1 << 19,       # 1<<19 = option
+    "陪看间隔": 20,
+}
+
+MOD_MASK = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+
+# 按 Apple 的书写习惯排：⌃⌥⇧⌘
+MOD_NAMES = [
+    (1 << 18, "⌃"), (1 << 19, "⌥"), (1 << 17, "⇧"), (1 << 20, "⌘"),
+]
+
+KEY_NAMES = {
+    49: "Space", 48: "Tab", 36: "Return", 53: "Esc", 51: "Delete",
+    126: "↑", 125: "↓", 123: "←", 124: "→",
+    18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6",
+    26: "7", 28: "8", 25: "9", 29: "0",
+    122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+    98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
+}
+
+# macOS 自带的常用快捷键——撞上就提醒（查不到系统全表，这里只列最常撞的）
+SYSTEM_HOTKEYS = {
+    (49, 1 << 20): "Spotlight 搜索",
+    (49, 1 << 18): "切换输入法",
+    (49, (1 << 20) | (1 << 19)): "Finder 搜索",
+    (48, 1 << 20): "切换 App",
+    (12, 1 << 20): "退出 App",
+    (20, (1 << 20) | (1 << 17)): "截屏（全屏）",
+    (21, (1 << 20) | (1 << 17)): "截屏（选区）",
+    (23, (1 << 20) | (1 << 17)): "截屏与录屏",
+    (126, 1 << 18): "调度中心",
+    (125, 1 << 18): "App 窗口",
+    (3, 1 << 20): "Finder",
+    (2, 1 << 20): "Finder",
+}
+
+
+def key_name(code, mask):
+    mods = "".join(name for bit, name in MOD_NAMES if mask & bit)
+    return mods + KEY_NAMES.get(code, "键%d" % code)
+
+
+def hotkey_conflict(code, mask):
+    """返回冲突说明；没问题返回 None"""
+    if not (mask & ((1 << 20) | (1 << 19) | (1 << 18))):
+        return "要带 ⌘ / ⌥ / ⌃ 其中一个，不然会抢走打字"
+    sys_hit = SYSTEM_HOTKEYS.get((code, mask))
+    if sys_hit:
+        return "和系统快捷键「%s」撞了" % sys_hit
+    return None
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "whale.png"),
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
 
 
 def log(*a):
-    print("[fish]", *a, flush=True)
+    line = "[fish] " + " ".join(str(x) for x in a)
+    print(line, flush=True)
+    try:
+        with open(os.path.join(HERE, "fishbuddy.log"), "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (time.strftime("%H:%M:%S"), line))
+    except Exception:
+        pass
 
 
 def load_settings():
@@ -278,9 +345,10 @@ class TTS:
 class Hotkey:
     """⌥Space 按住说话（全局；要「辅助功能/输入监控」权限）"""
 
-    def __init__(self, on_down, on_up):
+    def __init__(self, on_down, on_up, binding):
         self.on_down = on_down
         self.on_up = on_up
+        self.binding = binding          # callable -> (keyCode, modifierMask)
         self.down = False
         self.monitors = []
 
@@ -309,12 +377,14 @@ class Hotkey:
 
     @objc.python_method
     def _handle(self, ev):
-        from AppKit import NSEventModifierFlagOption, NSEventTypeKeyDown, NSEventTypeKeyUp
+        from AppKit import NSEventTypeKeyDown, NSEventTypeKeyUp
 
         try:
-            if ev.keyCode() != 49:  # space
+            code, want = self.binding()
+            if ev.keyCode() != code:
                 return ev
-            if not (ev.modifierFlags() & NSEventModifierFlagOption):
+            got = ev.modifierFlags() & MOD_MASK
+            if got != (want & MOD_MASK):
                 return ev
             if ev.type() == NSEventTypeKeyDown:
                 if not self.down:
@@ -404,9 +474,10 @@ class Bubble(NSObject):
         host.addSubview_(label)
         win.setContentView_(host)
 
-        o = self.parent.win.frameOrigin()
-        x = o.x + BALL / 2 - w / 2
-        y = o.y + BALL + 8
+        fr = self.parent.win.frame()
+        o, fw, fh = fr.origin, fr.size.width, fr.size.height
+        x = o.x + fw / 2 - w / 2
+        y = o.y + fh + 8
         win.setFrameOrigin_((x, y))
         win.orderFrontRegardless()
         self.win = win
@@ -497,6 +568,7 @@ class Whale(NSObject):
         self.watch_interval = float(self.settings.get("陪看间隔") or 20)
         self.tts = None
         self.hotkey = None
+        self.settings_win = None
         return self
 
     # ---------- 窗口 ----------
@@ -850,14 +922,16 @@ class Whale(NSObject):
     @objc.python_method
     def set_state(self, s):
         self.state = s
-        alpha = {"idle": 1.0, "listen": 0.85, "think": 0.9}.get(s, 1.0)
+        base = 36.0 if self.settings.get("形象") == "minimal" else float(BALL)
+        alpha = {"idle": 1.0, "listen": 0.9, "think": 0.92}.get(s, 1.0)
         try:
-            self.win.setAlphaValue_(alpha)
+            self.win.setAlphaValue_(alpha if self.settings.get("形象") != "minimal" else alpha * 0.9)
             if s == "listen":
-                self.iv.setFrameSize_(NSMakeSize(BALL * 1.08, BALL * 1.08))
-                self.iv.setFrameOrigin_((-BALL * 0.04, -BALL * 0.04))
+                k = 1.10
+                self.iv.setFrameSize_(NSMakeSize(base * k, base * k))
+                self.iv.setFrameOrigin_((-base * (k - 1) / 2, -base * (k - 1) / 2))
             else:
-                self.iv.setFrame_(NSMakeRect(0, 0, BALL, BALL))
+                self.iv.setFrame_(NSMakeRect(0, 0, base, base))
         except Exception:
             pass
 
@@ -867,6 +941,68 @@ class Whale(NSObject):
             self.bubble.show_text("语音模块没准备好", 4, error=True)
             return False
         return True
+
+    @objc.python_method
+    def apply_display_mode(self, mode=None):
+        mode = mode or self.settings.get("形象", "image")
+        self.settings["形象"] = mode
+        try:
+            if mode == "minimal":
+                dot = os.path.join(HERE, "assets", "dot.png")
+                img = NSImage.alloc().initWithContentsOfFile_(dot) if os.path.exists(dot) else None
+                if img is None:
+                    img = placeholder_image(36)
+                self.iv.setImage_(img)
+                self.win.setFrame_display_(
+                    NSMakeRect(self.win.frame().origin.x, self.win.frame().origin.y, 36, 36),
+                    False,
+                )
+                self.iv.setFrame_(NSMakeRect(0, 0, 36, 36))
+                self.win.setAlphaValue_(0.88)
+            else:
+                img = None
+                for cand in ASSET_CANDIDATES:
+                    if os.path.exists(cand):
+                        img = NSImage.alloc().initWithContentsOfFile_(cand)
+                        if img is not None:
+                            break
+                self.iv.setImage_(img if img is not None else placeholder_image(BALL))
+                self.win.setFrame_display_(
+                    NSMakeRect(self.win.frame().origin.x, self.win.frame().origin.y, BALL, BALL),
+                    False,
+                )
+                self.iv.setFrame_(NSMakeRect(0, 0, BALL, BALL))
+                self.win.setAlphaValue_(1.0)
+        except Exception as e:
+            log("换形象失败", e)
+
+    @objc.python_method
+    def apply_widget_enabled(self, on):
+        self.settings["挂件"] = bool(on)
+        try:
+            if on:
+                self.win.orderFrontRegardless()
+                self.iv.setHidden_(False)
+            else:
+                self.win.orderOut_(None)
+            if not on:
+                self.bubble.show_text("挂件已隐藏 · 菜单栏 🐋 还能打开设置", 3)
+        except Exception:
+            pass
+
+    @objc.python_method
+    def rebuild_hotkey(self):
+        if self.hotkey is None:
+            return
+        self.hotkey.stop()
+        if self.settings.get("热键"):
+            self.hotkey.start()
+
+    def openSettings_(self, sender):
+        if self.settings_win is None:
+            self.settings_win = SettingsWindow.alloc().initWithWhale_(self)
+        self.settings_win.refresh()
+        self.settings_win.show()
 
     def show_menu(self, event):
         m = NSMenu.alloc().init()
@@ -896,6 +1032,10 @@ class Whale(NSObject):
         ita.setTarget_(self)
         m.addItem_(ita)
         m.addItem_(NSMenuItem.separatorItem())
+        itc = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("设置…", "openSettings:", ",")
+        itc.setTarget_(self)
+        m.addItem_(itc)
+        m.addItem_(NSMenuItem.separatorItem())
         it1 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打个招呼", "ping:", "")
         it1.setTarget_(self)
         m.addItem_(it1)
@@ -914,6 +1054,204 @@ class Whale(NSObject):
 
     def quit_(self, sender):
         NSApplication.sharedApplication().terminate_(None)
+
+
+# ---------------------------------------------------------------- 设置窗口
+class SettingsWindow(NSObject):
+    """挂件开关 / 形象 / 全局热键 / 朗读 / 陪看间隔"""
+
+    def initWithWhale_(self, whale):
+        self = objc.super(SettingsWindow, self).init()
+        if self is None:
+            return None
+        self.whale = whale
+        self.win = None
+        self.recorder = None
+        self.build()
+        return self
+
+    @objc.python_method
+    def build(self):
+        w, h = 470.0, 360.0
+        self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, w, h),
+            NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
+            NSBackingStoreBuffered,
+            False,
+        )
+        self.win.setTitle_("大肥鱼 设置")
+        self.win.setReleasedWhenClosed_(False)
+        self.win.center()
+        v = self.win.contentView()
+
+        def label(text, x, y, ww, size=13, bold=False, gray=False):
+            f = NSTextField.labelWithString_(text)
+            f.setFrame_(NSMakeRect(x, y, ww, 20))
+            f.setFont_(
+                NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size)
+            )
+            if gray:
+                f.setTextColor_(NSColor.secondaryLabelColor())
+            v.addSubview_(f)
+            return f
+
+        label("大肥鱼 · 设置", 20, h - 42, 300, size=16, bold=True)
+
+        # 1) 挂件开关
+        self.cb_widget = NSButton.alloc().initWithFrame_(NSMakeRect(20, h - 82, 260, 24))
+        self.cb_widget.setButtonType_(3)
+        self.cb_widget.setTitle_("显示挂件（关掉只留菜单栏）")
+        self.cb_widget.setTarget_(self)
+        self.cb_widget.setAction_("toggleWidget:")
+        v.addSubview_(self.cb_widget)
+
+        # 2) 形象
+        label("形象", 20, h - 120, 60)
+        self.seg = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(80, h - 124, 240, 26))
+        self.seg.setSegmentCount_(2)
+        self.seg.setLabel_forSegment_("素材形象", 0)
+        self.seg.setLabel_forSegment_("极简圆点", 1)
+        self.seg.setTarget_(self)
+        self.seg.setAction_("modeChanged:")
+        v.addSubview_(self.seg)
+        self.lbl_mode_hint = label(
+            "极简：只留一个小圆点，安静不抢眼", 80, h - 146, 360, size=11, gray=True
+        )
+
+        # 3) 热键
+        label("全局热键", 20, h - 196, 70)
+        self.btn_hotkey = NSButton.alloc().initWithFrame_(NSMakeRect(96, h - 200, 150, 28))
+        self.btn_hotkey.setBezelStyle_(1)
+        self.btn_hotkey.setTarget_(self)
+        self.btn_hotkey.setAction_("recordHotkey:")
+        v.addSubview_(self.btn_hotkey)
+        self.lbl_hint = label("", 256, h - 196, 190, size=11, gray=True)
+
+        # 4) 朗读
+        self.cb_speak = NSButton.alloc().initWithFrame_(NSMakeRect(20, h - 236, 320, 24))
+        self.cb_speak.setButtonType_(3)
+        self.cb_speak.setTitle_("念出来（用系统语音读她的回话）")
+        self.cb_speak.setTarget_(self)
+        self.cb_speak.setAction_("toggleSpeak:")
+        v.addSubview_(self.cb_speak)
+
+        # 5) 陪看间隔
+        label("陪看间隔", 20, h - 276, 70)
+        self.step = NSStepper.alloc().initWithFrame_(NSMakeRect(96, h - 280, 19, 27))
+        self.step.setMinValue_(10)
+        self.step.setMaxValue_(120)
+        self.step.setIncrement_(10)
+        self.step.setValueWraps_(False)
+        self.step.setTarget_(self)
+        self.step.setAction_("intervalChanged:")
+        v.addSubview_(self.step)
+        self.lbl_interval = label("20 秒", 124, h - 274, 80)
+
+        # 关闭
+        btn = NSButton.alloc().initWithFrame_(NSMakeRect(w - 120, 18, 100, 30))
+        btn.setBezelStyle_(1)
+        btn.setTitle_("关闭")
+        btn.setTarget_(self)
+        btn.setAction_("closeWin:")
+        v.addSubview_(btn)
+
+    @objc.python_method
+    def refresh(self):
+        st = self.whale.settings
+        self.cb_widget.setState_(1 if st.get("挂件", True) else 0)
+        self.seg.setSelectedSegment_(1 if st.get("形象") == "minimal" else 0)
+        self.cb_speak.setState_(1 if st.get("朗读") else 0)
+        self.step.setIntegerValue_(int(st.get("陪看间隔") or 20))
+        self.lbl_interval.setStringValue_("%d 秒" % int(st.get("陪看间隔") or 20))
+        self.btn_hotkey.setTitle_(key_name(int(st.get("键", 49)), int(st.get("修饰", 1 << 19))))
+        reason = hotkey_conflict(int(st.get("键", 49)), int(st.get("修饰", 1 << 19)))
+        self.lbl_hint.setStringValue_(reason or "和系统快捷键不冲突")
+        self.lbl_hint.setTextColor_(
+            NSColor.systemRedColor() if reason else NSColor.secondaryLabelColor()
+        )
+
+    @objc.python_method
+    def show(self):
+        self.refresh()
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        self.win.makeKeyAndOrderFront_(None)
+
+    def closeWin_(self, sender):
+        self.win.orderOut_(None)
+
+    def toggleWidget_(self, sender):
+        on = bool(sender.state())
+        self.whale.settings["挂件"] = on
+        save_settings(self.whale.settings)
+        self.whale.apply_widget_enabled(on)
+
+    def toggleSpeak_(self, sender):
+        on = bool(sender.state())
+        self.whale.settings["朗读"] = on
+        save_settings(self.whale.settings)
+        if not on and self.whale.tts is not None:
+            self.whale.tts.stop()
+
+    def modeChanged_(self, sender):
+        mode = "minimal" if sender.selectedSegment() == 1 else "image"
+        self.whale.settings["形象"] = mode
+        save_settings(self.whale.settings)
+        self.whale.apply_display_mode(mode)
+
+    def intervalChanged_(self, sender):
+        n = int(sender.integerValue())
+        self.whale.settings["陪看间隔"] = n
+        self.whale.watch_interval = float(n)
+        self.lbl_interval.setStringValue_("%d 秒" % n)
+        save_settings(self.whale.settings)
+
+    def recordHotkey_(self, sender):
+        from AppKit import NSEvent, NSEventMaskKeyDown
+
+        if self.recorder is not None:
+            NSEvent.removeMonitor_(self.recorder)
+            self.recorder = None
+        self.lbl_hint.setStringValue_("按下组合键…（Esc 取消）")
+        self.lbl_hint.setTextColor_(NSColor.secondaryLabelColor())
+        sender.setTitle_("…")
+
+        def handler(ev):
+            code = int(ev.keyCode())
+            mask = int(ev.modifierFlags()) & MOD_MASK
+            if code == 53:  # Esc
+                self.stop_record()
+                self.refresh()
+                return ev
+            bad = hotkey_conflict(code, mask)
+            if bad:
+                self.lbl_hint.setStringValue_(bad)
+                self.lbl_hint.setTextColor_(NSColor.systemRedColor())
+                self.stop_record()
+                self.btn_hotkey.setTitle_(key_name(int(self.whale.settings.get("键", 49)),
+                                                   int(self.whale.settings.get("修饰", 1 << 19))))
+                return ev
+            self.whale.settings["键"] = code
+            self.whale.settings["修饰"] = mask
+            save_settings(self.whale.settings)
+            self.stop_record()
+            self.whale.rebuild_hotkey()
+            self.refresh()
+            return ev
+
+        self.recorder = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            NSEventMaskKeyDown, handler
+        )
+
+    @objc.python_method
+    def stop_record(self):
+        from AppKit import NSEvent
+
+        if self.recorder is not None:
+            try:
+                NSEvent.removeMonitor_(self.recorder)
+            except Exception:
+                pass
+            self.recorder = None
 
 
 # ---------------------------------------------------------------- 回话服务
@@ -989,7 +1327,14 @@ def main():
     start_reply_server(lambda t: whale.performSelectorOnMainThread_withObject_waitUntilDone_("speak:", t, False))
 
     whale.tts = TTS()
-    whale.hotkey = Hotkey(whale.begin_talk, whale.end_talk)
+    whale.hotkey = Hotkey(
+        whale.begin_talk,
+        whale.end_talk,
+        lambda: (
+            int(whale.settings.get("键", 49)),
+            int(whale.settings.get("修饰", 1 << 19)),
+        ),
+    )
     if whale.settings.get("热键"):
         if not whale.hotkey.start():
             log("全局热键没起来（缺辅助功能权限），只能按住鲸鱼说话")
@@ -1010,6 +1355,9 @@ def main():
         def run_shot():
             time.sleep(1.5)
             b64, err = capture_screen()
+            if b64:
+                with open(os.path.join(HERE, "shot.png"), "wb") as f:
+                    f.write(base64.b64decode(b64))
             with open(os.path.join(HERE, "shot.log"), "a", encoding="utf-8") as f:
                 f.write("%s SHOT bytes=%s err=%r\n" % (time.strftime("%H:%M:%S"), len(b64) if b64 else 0, err))
         threading.Thread(target=run_shot, daemon=True).start()
@@ -1043,6 +1391,18 @@ def main():
                 f.write("%s ASR=%r ERR=%r\n" % (time.strftime("%H:%M:%S"), txt, err))
             os.environ.pop("FISH_TEST_WAV", None)
         threading.Thread(target=run_test, daemon=True).start()
+
+    whale.apply_display_mode(os.environ.get("FISH_TEST_MODE") or whale.settings.get("形象", "image"))
+    if not whale.settings.get("挂件", True):
+        whale.apply_widget_enabled(False)
+
+    if os.environ.get("FISH_TEST_SETTINGS"):
+        def run_settings():
+            time.sleep(1.5)
+            whale.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "openSettings:", None, False
+            )
+        threading.Thread(target=run_settings, daemon=True).start()
 
     log("起来了：8778 收话，8777 送话")
     bubble_tip = "按住鲸鱼说话 · 拖动走位 · 双击打字"
