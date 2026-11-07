@@ -47,6 +47,7 @@ from AppKit import (
     NSTextField,
     NSVariableStatusItemLength,
     NSView,
+    NSVisualEffectView,
     NSWindow,
     NSWindowStyleMaskBorderless,
     NSWindowStyleMaskClosable,
@@ -72,6 +73,9 @@ DEFAULT_SETTINGS = {
         "设置": [1, 1 << 19],     # ⌥S（打开设置）
     },
     "尺寸": 132,          # 图标边长（像素）
+    "弹幕": True,         # 她的回话同时以弹幕形式滑过屏幕
+    "音色": "system",     # system = 系统音色；edge = 晓晓（在线，更像真人）
+    "电话模式": False,    # 连续对话：她说完自动继续听
     "陪看间隔": 20,
 }
 
@@ -156,7 +160,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -321,6 +325,134 @@ class Recorder:
             w.writeframes(raw)
         return path, peak
 
+def ocr_screen_text(pil_img, box_hint=0.30):
+    """截图底部一块做 OCR（陪看抽台词）。返回 [行, …]"""
+    try:
+        import io
+
+        import Quartz
+        import Vision
+        from Foundation import NSData
+
+        w, h = pil_img.size
+        crop = pil_img.crop((0, int(h * (1 - box_hint)), w, h)).convert("RGB")
+        buf = io.BytesIO()
+        crop.save(buf, "PNG")
+        data = NSData.dataWithBytes_length_(buf.getvalue(), len(buf.getvalue()))
+        src = Quartz.CGImageSourceCreateWithData(data, None)
+        if src is None:
+            return []
+        cg = Quartz.CGImageSourceCreateImageAtIndex(src, 0, None)
+        if cg is None:
+            return []
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLevel_(0)  # accurate
+        try:
+            req.setRecognitionLanguages_(["zh-Hans", "en-US"])
+        except Exception:
+            pass
+        req.setUsesLanguageCorrection_(True)
+        handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cg, None)
+        handler.performRequests_error_([req], None)
+        out = []
+        for obs in req.results() or []:
+            cands = obs.topCandidates_(1)
+            if cands and len(cands):
+                t = str(cands[0].string()).strip()
+                if t:
+                    out.append(t)
+        return out[-4:]
+    except Exception as e:
+        log("OCR 失败", e)
+        return []
+
+
+# ---------------------------------------------------------------- 弹幕
+class Danmaku(NSObject):
+    """把她的回话当弹幕从屏幕右边滑过去（点击穿透）"""
+
+    def initWithParent_(self, parent):
+        self = objc.super(Danmaku, self).init()
+        if self is None:
+            return None
+        self.parent = parent
+        self.win = None
+        self.label = None
+        self.step = 0.0
+        self.timer = None
+        return self
+
+    def fly_(self, timer):
+        if self.win is None:
+            try:
+                timer.invalidate()
+            except Exception:
+                pass
+            return
+        f = self.win.frame()
+        x = f.origin.x - self.step
+        self.win.setFrameOrigin_((x, f.origin.y))
+        if x + f.size.width < 0:
+            self.win.orderOut_(None)
+            self.win = None
+            self.timer = None
+            try:
+                timer.invalidate()
+            except Exception:
+                pass
+
+    @objc.python_method
+    def show_text(self, text):
+        from AppKit import NSColor, NSFont, NSScreen, NSTextField
+
+        try:
+            text = (text or "").strip()
+            if not text:
+                return
+            scr = NSScreen.mainScreen().frame()
+            sw = scr.size.width
+            h = 54.0
+            self.label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, sw, h))
+            self.label.setStringValue_(text[:120])
+            self.label.setBezeled_(False)
+            self.label.setDrawsBackground_(False)
+            self.label.setEditable_(False)
+            self.label.setSelectable_(False)
+            self.label.setFont_(NSFont.boldSystemFontOfSize_(30))
+            self.label.setTextColor_(NSColor.whiteColor())
+            self.label.setAlignment_(0)   # 左对齐：文字一进屏就能看见
+            self.label.setHasShadow_(True) if hasattr(self.label, "setHasShadow_") else None
+
+            if self.win is None:
+                self.win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+                    NSMakeRect(sw, scr.size.height * 0.72, sw, h),
+                    NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+                    NSBackingStoreBuffered,
+                    False,
+                )
+                self.win.setOpaque_(False)
+                self.win.setBackgroundColor_(NSColor.clearColor())
+                self.win.setLevel_(5)
+                self.win.setIgnoresMouseEvents_(True)
+            self.win.setContentView_(self.label)
+            self.win.setFrame_display_(NSMakeRect(sw, scr.size.height * 0.72, sw, h), False)
+            self.win.orderFrontRegardless()
+            # 约 9 秒滑完；先停掉上一条，否则多个定时器叠加速度会翻倍
+            if self.timer is not None:
+                try:
+                    self.timer.invalidate()
+                except Exception:
+                    pass
+            self.step = (sw + 200) / (9.0 * 30.0)
+            self.timer = (
+                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    1.0 / 30.0, self, "fly:", None, True
+                )
+            )
+        except Exception as e:
+            log("弹幕失败", e)
+
+
 # ---------------------------------------------------------------- 语音识别
 class Speech:
     """SFSpeechRecognizer 包一层：录完的 wav → 一句话"""
@@ -387,6 +519,21 @@ class Speech:
             return box["text"], None
         return None, box.get("error") or "没听清（超时）"
 
+def frost_view(rect, radius=16.0):
+    """磨砂玻璃层（macOS 的 NSVisualEffectView）"""
+    try:
+        eff = NSVisualEffectView.alloc().initWithFrame_(rect)
+        eff.setMaterial_(3)          # HUDWindow
+        eff.setBlendingMode_(0)      # behindWindow
+        eff.setState_(1)             # active
+        eff.setWantsLayer_(True)
+        eff.layer().setCornerRadius_(radius)
+        eff.layer().setMasksToBounds_(True)
+        return eff
+    except Exception:
+        return None
+
+
 def placeholder_image():
     from AppKit import NSColor, NSImage, NSMakeRect
 
@@ -399,35 +546,107 @@ def placeholder_image():
 
 
 class TTS:
-    """她的回话念出来（系统语音合成，不用联网）"""
+    """念她的回话。两档：
+       system —— 系统语音（挑质量最高的中文音色）
+       edge   —— 微软 Edge 的在线神经音色（晓晓），更像真人；要联网
+    """
 
     def __init__(self):
         from AVFoundation import AVSpeechSynthesizer
 
         self.synth = AVSpeechSynthesizer.alloc().init()
-        self.voice = None
+        self.voice = self._best_voice()
+        self.proc = None
+
+    @objc.python_method
+    def _best_voice(self):
+        """系统里质量最高的中文音色（premium > enhanced > default）"""
         try:
             from AVFoundation import AVSpeechSynthesisVoice
 
-            self.voice = AVSpeechSynthesisVoice.voiceWithLanguage_("zh-CN")
-        except Exception:
-            pass
+            best, best_q = None, -1
+            for v in AVSpeechSynthesisVoice.speechVoices() or []:
+                lang = str(v.language() or "")
+                if not lang.startswith("zh"):
+                    continue
+                q = int(v.quality())
+                if q > best_q:
+                    best, best_q = v, q
+            if best is not None:
+                log("系统音色：%s（quality=%d）" % (best.name(), best_q))
+            return best
+        except Exception as e:
+            log("挑音色失败", e)
+            return None
 
     @objc.python_method
-    def say(self, text):
-        from AVFoundation import AVSpeechUtterance
-
+    def say(self, text, mode="system", blocking=False):
         text = (text or "").strip()
         if not text:
             return
+        if mode == "edge":
+            ok = self._say_edge(text, blocking)
+            if ok:
+                return
+            log("edge 音色不可用，退回系统音色")
+        self._say_system(text)
+
+    @objc.python_method
+    def _say_system(self, text):
+        from AVFoundation import AVSpeechUtterance
+
         try:
             utt = AVSpeechUtterance.speechUtteranceWithString_(text[:400])
             if self.voice is not None:
                 utt.setVoice_(self.voice)
-            utt.setRate_(0.5)
+            utt.setRate_(0.48)   # 慢一点点，更像说话
+            utt.setPitchMultiplier_(1.02)
             self.synth.speakUtterance_(utt)
         except Exception as e:
             log("朗读失败", e)
+
+    @objc.python_method
+    def _say_edge(self, text, blocking):
+        """edge-tts 合成 + afplay 播放（同步，电话模式要好判断"说完了"）"""
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+
+        if shutil.which("edge-tts") is None and not _has_module("edge_tts"):
+            return False
+        fd, path = tempfile.mkstemp(suffix=".mp3", prefix="fishbuddy-tts-")
+        os.close(fd)
+        try:
+            cmd = [sys.executable, "-m", "edge_tts", "--voice", "zh-CN-XiaoxiaoNeural",
+                   "--text", text[:400], "--write-media", path]
+            r = subprocess.run(cmd, capture_output=True, timeout=20)
+            if r.returncode != 0 or os.path.getsize(path) < 800:
+                return False
+            p = subprocess.Popen(["afplay", path])
+            self.proc = p
+            if blocking:
+                p.wait()
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+            else:
+                def clean():
+                    p.wait()
+                    try:
+                        os.unlink(path)
+                    except Exception:
+                        pass
+                threading.Thread(target=clean, daemon=True).start()
+            return True
+        except Exception as e:
+            log("edge 朗读失败", e)
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+            return False
 
     @objc.python_method
     def stop(self):
@@ -435,6 +654,18 @@ class TTS:
             self.synth.stopSpeakingAtBoundary_(0)
         except Exception:
             pass
+        try:
+            if self.proc is not None:
+                self.proc.terminate()
+                self.proc = None
+        except Exception:
+            pass
+
+
+def _has_module(name):
+    import importlib.util
+
+    return importlib.util.find_spec(name) is not None
 
 
 class Hotkeys:
@@ -555,9 +786,9 @@ class Bubble(NSObject):
         label.setSelectable_(False)
         label.setFont_(NSFont.systemFontOfSize_(14))
         label.setTextColor_(
-            NSColor.colorWithCalibratedWhite_alpha_(0.15, 1.0)
+            NSColor.labelColor()
             if not error
-            else NSColor.colorWithCalibratedRed_green_blue_alpha_(0.7, 0.12, 0.12, 1.0)
+            else NSColor.systemRedColor()
         )
         label.setUsesSingleLineMode_(False)
         label.setLineBreakMode_(0)
@@ -580,13 +811,15 @@ class Bubble(NSObject):
         win.setHasShadow_(True)
         win.setAlphaValue_(0.97)
 
-        host = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
-        host.setWantsLayer_(True)
-        rgba = (1.0, 0.93, 0.93, 0.97) if error else (0.99, 0.96, 0.93, 0.97)
-        host.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(*rgba).CGColor()
-        )
-        host.layer().setCornerRadius_(16.0)
+        host = frost_view(NSMakeRect(0, 0, w, h), 16.0)
+        if host is None:
+            host = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+            host.setWantsLayer_(True)
+            rgba = (1.0, 0.93, 0.93, 0.97) if error else (0.99, 0.96, 0.93, 0.97)
+            host.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(*rgba).CGColor()
+            )
+            host.layer().setCornerRadius_(16.0)
         host.addSubview_(label)
         win.setContentView_(host)
 
@@ -685,6 +918,9 @@ class Whale(NSObject):
         self.tts = None
         self.hotkey = None
         self.settings_win = None
+        self.danmaku = None
+        self.reply_event = threading.Event()
+        self.phone_thread = None
         return self
 
     # ---------- 窗口 ----------
@@ -852,8 +1088,12 @@ class Whale(NSObject):
             return
         self.set_state("idle")
         self.bubble.show_text(text, 10)
+        if self.settings.get("弹幕") and self.danmaku is not None:
+            self.danmaku.show_text(text)
         if self.settings.get("朗读") and self.tts is not None:
-            self.tts.say(text)
+            self.tts.say(text, mode=str(self.settings.get("音色") or "system"),
+                         blocking=bool(self.settings.get("电话模式")))
+        self.reply_event.set()
 
     @objc.python_method
     def ask_text(self):
@@ -872,6 +1112,80 @@ class Whale(NSObject):
             if t:
                 self.bubble.show_text(f"你说：{t}", 2.0)
                 self.send(t)
+
+    # ---------- 电话模式 ----------
+    @objc.python_method
+    def listen_utterance(self, max_wait=8.0, max_len=15.0, silence=1.1):
+        """等一句人话：有声音才开始算，安静 1.1 秒就收。返回 (wav, peak)"""
+        import numpy as np
+
+        r = Recorder()
+        r.start()
+        t0 = time.time()
+        spoke = False
+        last_loud = 0.0
+        try:
+            while time.time() - t0 < max_len:
+                time.sleep(0.1)
+                with r.lock:
+                    raw = b"".join(r.frames)
+                if not raw:
+                    continue
+                tail = raw[-SAMPLE_RATE * 2:]
+                arr = np.frombuffer(tail, dtype=np.int16)
+                peak = float(np.abs(arr).max()) if arr.size else 0.0
+                now = time.time()
+                if peak > 500:
+                    spoke = True
+                    last_loud = now
+                if spoke and now - last_loud > silence:
+                    break
+                if not spoke and now - t0 > max_wait:
+                    break
+        finally:
+            wav, peak = r.stop()
+        return (wav, peak) if spoke else (None, peak)
+
+    @objc.python_method
+    def toggle_phone(self):
+        self.settings["电话模式"] = not self.settings.get("电话模式")
+        save_settings(self.settings)
+        if self.settings["电话模式"]:
+            if self.phone_thread is None or not self.phone_thread.is_alive():
+                self.phone_thread = threading.Thread(target=self.phone_loop, daemon=True)
+                self.phone_thread.start()
+            self.bubble.show_text("电话模式：开 · 说完等我回（再说话就继续）", 4)
+        else:
+            self.bubble.show_text("电话模式：关", 2)
+        return self.settings["电话模式"]
+
+    @objc.python_method
+    def phone_loop(self):
+        while self.settings.get("电话模式"):
+            if self.listening or self.busy:
+                time.sleep(0.4)
+                continue
+            wav, peak = self.listen_utterance()
+            if not wav or peak < 60:
+                continue
+            if not self.settings.get("电话模式"):
+                return
+            txt, err = self.speech.transcribe(wav)
+            try:
+                os.unlink(wav)
+            except Exception:
+                pass
+            if not txt:
+                log("电话模式：没听清（%s）" % (err or "无文本"))
+                continue
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("uiHeard:", txt, False)
+            self.reply_event.clear()
+            self.reply_event.wait(90)
+            time.sleep(0.4)
+
+    def phoneMenu_(self, sender):
+        on = self.toggle_phone()
+        sender.setTitle_("电话模式（%s）" % ("开" if on else "关"))
 
     # ---------- 陪看 ----------
     @objc.python_method
@@ -896,12 +1210,14 @@ class Whale(NSObject):
         self.strip.setLevel_(3)
         self.strip.setIgnoresMouseEvents_(True)
         self.strip.setHasShadow_(True)
-        host = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
-        host.setWantsLayer_(True)
-        host.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.08, 0.1, 0.14, 0.72).CGColor()
-        )
-        host.layer().setCornerRadius_(12.0)
+        host = frost_view(NSMakeRect(0, 0, w, h), 12.0)
+        if host is None:
+            host = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+            host.setWantsLayer_(True)
+            host.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.08, 0.1, 0.14, 0.72).CGColor()
+            )
+            host.layer().setCornerRadius_(12.0)
         lab = NSTextField.alloc().initWithFrame_(NSMakeRect(14, 8, w - 28, 18))
         lab.setBezeled_(False)
         lab.setDrawsBackground_(False)
@@ -940,6 +1256,10 @@ class Whale(NSObject):
     @objc.python_method
     def watch_loop(self):
         while self.watching:
+            try:
+                self.capture_and_subtitles()
+            except Exception as e:
+                log("抽台词失败", e)
             ok, msg = self.send_frame(False, "陪看")
             if not ok:
                 self.watching = False
@@ -954,6 +1274,33 @@ class Whale(NSObject):
                 if not self.watching:
                     return
                 time.sleep(0.1)
+
+    @objc.python_method
+    def capture_and_subtitles(self):
+        """截一张 + 认画面底部的字，把台词发给插件（陪看她才知道在演什么）"""
+        b64, err = capture_screen()
+        if not b64:
+            return
+        try:
+            import base64 as _b64
+            import io as _io
+
+            from PIL import Image
+
+            img = Image.open(_io.BytesIO(_b64.b64decode(b64)))
+            lines = ocr_screen_text(img, box_hint=0.28)
+            if not lines:
+                return
+            body = json.dumps({"lines": lines}).encode("utf-8")
+            req = urllib.request.Request(
+                "http://127.0.0.1:8777/hands/subtitle",
+                data=body,
+                headers={"content-type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=8):
+                pass
+        except Exception as e:
+            log("发字幕失败", e)
 
     @objc.python_method
     def send_frame(self, immediate, source, quiet=True):
@@ -1207,6 +1554,11 @@ class Whale(NSObject):
         )
         itw.setTarget_(self)
         m.addItem_(itw)
+        itp = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "电话模式（%s）" % ("开" if self.settings.get("电话模式") else "关"), "phoneMenu:", ""
+        )
+        itp.setTarget_(self)
+        m.addItem_(itp)
         itl = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("让她看一眼", "lookMenu:", "")
         itl.setTarget_(self)
         m.addItem_(itl)
@@ -1271,7 +1623,7 @@ class SettingsWindow(NSObject):
 
     @objc.python_method
     def build(self):
-        w, h = 480.0, 600.0
+        w, h = 500.0, 720.0
         self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, w, h),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
@@ -1370,6 +1722,36 @@ class SettingsWindow(NSObject):
         v.addSubview_(self.step)
         self.lbl_interval = label("20 秒", 124, y + 3, 80)
 
+        # 7) 弹幕
+        y -= 40
+        self.cb_danmaku = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 380, 24))
+        self.cb_danmaku.setButtonType_(3)
+        self.cb_danmaku.setTitle_("弹幕（回话从屏幕上滑过去）")
+        self.cb_danmaku.setTarget_(self)
+        self.cb_danmaku.setAction_("toggleDanmaku:")
+        v.addSubview_(self.cb_danmaku)
+
+        # 8) 电话模式
+        y -= 34
+        self.cb_phone = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 380, 24))
+        self.cb_phone.setButtonType_(3)
+        self.cb_phone.setTitle_("电话模式（她说完，你接着说）")
+        self.cb_phone.setTarget_(self)
+        self.cb_phone.setAction_("togglePhone:")
+        v.addSubview_(self.cb_phone)
+
+        # 9) 音色
+        y -= 38
+        label("音色", 20, y + 3, 60)
+        self.seg_voice = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(80, y - 1, 300, 26))
+        self.seg_voice.setSegmentCount_(2)
+        self.seg_voice.setLabel_forSegment_("系统音色", 0)
+        self.seg_voice.setLabel_forSegment_("晓晓 · 在线", 1)
+        self.seg_voice.setTarget_(self)
+        self.seg_voice.setAction_("voiceChanged:")
+        v.addSubview_(self.seg_voice)
+        label("在线音色更像真人，但要联网", 80, y - 24, 360, size=11, gray=True)
+
         # 关闭
         btn = NSButton.alloc().initWithFrame_(NSMakeRect(w - 120, 18, 100, 30))
         btn.setBezelStyle_(1)
@@ -1388,6 +1770,9 @@ class SettingsWindow(NSObject):
         self.slider.setIntegerValue_(size)
         self.lbl_size.setStringValue_("%d px" % size)
         self.cb_speak.setState_(1 if st.get("朗读") else 0)
+        self.cb_danmaku.setState_(1 if st.get("弹幕") else 0)
+        self.cb_phone.setState_(1 if st.get("电话模式") else 0)
+        self.seg_voice.setSelectedSegment_(1 if st.get("音色") == "edge" else 0)
         self.step.setIntegerValue_(int(st.get("陪看间隔") or 20))
         self.lbl_interval.setStringValue_("%d 秒" % int(st.get("陪看间隔") or 20))
         table = st.get("热键表") or {}
@@ -1421,6 +1806,19 @@ class SettingsWindow(NSObject):
         save_settings(self.whale.settings)
         if not on and self.whale.tts is not None:
             self.whale.tts.stop()
+
+    def toggleDanmaku_(self, sender):
+        self.whale.settings["弹幕"] = bool(sender.state())
+        save_settings(self.whale.settings)
+
+    def togglePhone_(self, sender):
+        want = bool(sender.state())
+        if want != bool(self.whale.settings.get("电话模式")):
+            self.whale.toggle_phone()
+
+    def voiceChanged_(self, sender):
+        self.whale.settings["音色"] = "edge" if int(sender.selectedSegment()) == 1 else "system"
+        save_settings(self.whale.settings)
 
     def modeChanged_(self, sender):
         mode = {0: "image", 1: "minimal", 2: "mascot"}.get(int(sender.selectedSegment()), "image")
@@ -1602,6 +2000,7 @@ def main():
     whale = Whale.alloc().init()
     whale.build()
     whale.bubble = Bubble.alloc().initWithParent_(whale)
+    whale.danmaku = Danmaku.alloc().initWithParent_(whale)
 
     speech = Speech()
     whale.speech = speech

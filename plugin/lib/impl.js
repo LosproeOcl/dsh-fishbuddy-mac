@@ -20,7 +20,7 @@ const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh')
 const CONFIG_PATH = path.join(DSH_HOME, 'fishbuddy-mac-plugin.json')
 const DEFAULT_APP = path.join(HOME, '.dsh', 'whale-work', 'fishbuddy-mac', 'DSH-FishBuddy.app')
 
-const VERSION = '0.7.1'
+const VERSION = '0.8.0'
 
 const DEFAULT_CONFIG = {
   会话: '',
@@ -110,6 +110,7 @@ export default {
       events: [],
     }
     const pending = new Map()
+    const subtitles = []   // {at, text} —— 陪看抽到的台词，说话时一起带过去
 
     function note(kind, text) {
       state.events.push({ at: Date.now(), kind, text: String(text ?? '').slice(0, 120) })
@@ -196,6 +197,15 @@ export default {
       }
       out.sort((a, b) => b.mtime - a.mtime)
       return out.slice(0, 80)
+    }
+
+    /** 最近 30 秒的台词，拼在正文前面（陪看时她才知道刚才画面在说什么） */
+    function withSubtitles(text) {
+      const cut = Date.now() - 30_000
+      const recent = subtitles.filter((x) => x.at >= cut).slice(-6)
+      if (!recent.length) return text
+      const line = recent.map((x) => x.text).join(' / ')
+      return `（刚才画面字幕：${line}）\n${text}`
     }
 
     async function deliver(text, sessionId) {
@@ -309,10 +319,21 @@ export default {
         try {
           if (p === '/hands/say' || p === '/say') {
             const body = await readBody(req)
-            const text = String(body.text ?? body.正文 ?? '').trim()
+            let text = String(body.text ?? body.正文 ?? '').trim()
             if (!text) return json(res, 400, { ok: false, 说: '空的' })
-            await deliver(text, body.session)
+            text = withSubtitles(text)
             return json(res, 200, { ok: true, 说: '送进去了' })
+          }
+          if (p === '/hands/subtitle' || p === '/subtitle') {
+            const body = await readBody(req)
+            const lines = Array.isArray(body.lines) ? body.lines : (body.text ? [body.text] : [])
+            const nowMs = Date.now()
+            for (const one of lines.slice(0, 20)) {
+              const t = String(typeof one === 'string' ? one : (one && (one.text || one["文"])) || '').trim()
+              if (t) subtitles.push({ at: nowMs, text: t.slice(0, 120) })
+            }
+            while (subtitles.length > 60) subtitles.shift()
+            return json(res, 200, { ok: true, 说: '收到 ' + lines.length + ' 句' })
           }
           if (p === '/hands/frame' || p === '/frame') {
             const body = await readBody(req)
@@ -325,7 +346,8 @@ export default {
             state.frames += 1
             note('frame', `${Math.round(Buffer.byteLength(b64, 'base64') / 1024)}KB`)
             if (Number(body.立即) === 1) {
-              await deliver(`（挂件截了一张屏：${file}）` + (body.来源 ? ` 来源：${body.来源}` : ''))
+              const head = `（挂件截了一张屏：${file}）` + (body.来源 ? ` 来源：${body.来源}` : '')
+              await deliver(withSubtitles(head))
               return json(res, 200, { ok: true, 说: '发了，等她说' })
             }
             return json(res, 200, { ok: true, 说: '存着了', 存: file })
