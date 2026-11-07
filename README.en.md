@@ -109,6 +109,14 @@ Quit and relaunch the widget after changing permissions.
 
 ## Configuration
 
+### Short-reply hint
+
+While danmaku or speech is on, the plugin prefixes messages with:
+
+> (Limited display space: answer in one or two sentences, under 60 characters, no lists, no restating the question.)
+
+Turn both off and nothing is added. Edit `短回复提示` in `~/.dsh/fishbuddy-mac-plugin.json` (empty = disabled).
+
 ### Plugin (`~/.dsh/fishbuddy-mac-plugin.json`)
 
 ```json

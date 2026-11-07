@@ -163,7 +163,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.10.5"
+VERSION = "0.11.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -474,11 +474,36 @@ class Danmaku(NSObject):
             except Exception:
                 width = len(text) * size
             pad = 48.0
-            win_w = max(sw, width + pad * 2)
-            h = max(54.0, size * 1.8)
+            line_h = size * 1.5
+            max_w = sw - 120.0
+            if width + pad * 2 <= max_w:
+                # 一行放得下：窗口比屏幕宽也无所谓，整段滑过
+                win_w = max(sw, width + pad * 2)
+                box_w = width + pad
+                box_h = line_h
+                lines = 1
+            else:
+                # 放不下就换行，最多 3 行（≈150 字），整块一起滑
+                win_w = sw
+                box_w = max_w - pad
+                try:
+                    from Foundation import NSMutableParagraphStyle, NSString
+
+                    para = NSMutableParagraphStyle.alloc().init()
+                    para.setLineBreakMode_(0)  # 按词/字换行
+                    rect = NSString.stringWithString_(text).boundingRectWithSize_options_attributes_(
+                        NSMakeSize(box_w, 1e6),
+                        (1 << 0) | (1 << 3),  # usesLineFragmentOrigin | usesFontLeading
+                        {"NSFont": font, "NSParagraphStyle": para},
+                    )
+                    lines = max(1, min(3, int(round(float(rect.size.height) / line_h + 0.45))))
+                except Exception:
+                    lines = 2
+                box_h = line_h * lines
+            h = box_h + 16.0
 
             self.label = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(pad, (h - size * 1.6) / 2, width + pad, size * 1.6)
+                NSMakeRect(pad, 8.0, box_w, box_h)
             )
             self.label.setStringValue_(text)
             self.label.setBezeled_(False)
@@ -488,8 +513,13 @@ class Danmaku(NSObject):
             self.label.setFont_(font)
             self.label.setTextColor_(NSColor.whiteColor())
             self.label.setAlignment_(0)
-            self.label.setUsesSingleLineMode_(True)
-            self.label.setLineBreakMode_(2)   # 不换行、不截断
+            if lines == 1:
+                self.label.setUsesSingleLineMode_(True)
+                self.label.setLineBreakMode_(2)
+            else:
+                self.label.setUsesSingleLineMode_(False)
+                self.label.setLineBreakMode_(0)
+                self.label.setMaximumNumberOfLines_(lines)
 
             if self.win is None:
                 self.win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -1174,7 +1204,8 @@ class Whale(NSObject):
 
         def run():
             try:
-                body = json.dumps({"text": text}).encode("utf-8")
+                short = bool(self.settings.get("弹幕") or self.settings.get("朗读"))
+                body = json.dumps({"text": text, "短回复": short}).encode("utf-8")
                 req = urllib.request.Request(
                     SEND_URL, data=body, headers={"content-type": "application/json"}
                 )

@@ -20,13 +20,16 @@ const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh')
 const CONFIG_PATH = path.join(DSH_HOME, 'fishbuddy-mac-plugin.json')
 const DEFAULT_APP = path.join(HOME, '.dsh', 'whale-work', 'fishbuddy-mac', 'DSH-FishBuddy.app')
 
-const VERSION = '0.10.4'
+const VERSION = '0.11.0'
 
 const DEFAULT_CONFIG = {
   会话: '',
   回调: 'http://127.0.0.1:8778/hands/reply',
   挂件路径: DEFAULT_APP,
   端口: 8777,
+  // 弹幕/朗读开着时，让回复短一点（挂件窗口放不下长文）
+  短回复提示:
+    '（挂件端显示空间有限：请用口语化的一两句话回答，控制在 60 字以内，不要列表、不要分点、不要复述问题。）',
 }
 
 function readConfig() {
@@ -218,7 +221,11 @@ export default {
       throw new Error('磁盘上没有任何会话')
     }
 
-    async function deliver(text, sessionId) {
+    async function deliver(text, sessionId, short = false) {
+      if (short) {
+        const tip = String(readConfig().短回复提示 || '').trim()
+        if (tip) text = tip + '\n' + text
+      }
       const controller = ctx.get('sessionController') || ctx.sessionController
       if (!controller) throw new Error('sessionController 不可用')
       const picked = resolveSession(String(sessionId || readConfig().会话 || '').trim())
@@ -335,7 +342,7 @@ export default {
             let text = String(body.text ?? body.正文 ?? '').trim()
             if (!text) return json(res, 400, { ok: false, 说: '空的' })
             text = withSubtitles(text)
-            const sent = await deliver(text, body.session)
+            const sent = await deliver(text, body.session, !!body["短回复"])
             return json(res, 200, {
               ok: true,
               说: '送进去了',
@@ -438,7 +445,7 @@ export default {
     route('POST', '/dsh-fishbuddy/api/config', async (req, res) => {
       const body = await readBody(req)
       const next = readConfig()
-      for (const k of ['会话', '回调', '挂件路径']) {
+      for (const k of ['会话', '回调', '挂件路径', '短回复提示']) {
         if (typeof body[k] === 'string') next[k] = body[k].trim()
       }
       if (Number(body.端口) > 0) next.端口 = Number(body.端口)
