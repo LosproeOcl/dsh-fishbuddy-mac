@@ -20,7 +20,7 @@ const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh')
 const CONFIG_PATH = path.join(DSH_HOME, 'fishbuddy-mac-plugin.json')
 const DEFAULT_APP = path.join(HOME, '.dsh', 'whale-work', 'fishbuddy-mac', 'DSH-FishBuddy.app')
 
-const VERSION = '0.6.0'
+const VERSION = '0.7.0'
 
 const DEFAULT_CONFIG = {
   会话: '',
