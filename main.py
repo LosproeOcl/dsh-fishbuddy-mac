@@ -163,7 +163,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.10.0"
+VERSION = "0.9.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -701,6 +701,18 @@ class TTS:
             return False
 
     @objc.python_method
+    def is_speaking(self):
+        try:
+            if self.proc is not None and self.proc.poll() is None:
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(self.synth.isSpeaking())
+        except Exception:
+            return False
+
+    @objc.python_method
     def stop(self):
         try:
             self.synth.stopSpeakingAtBoundary_(0)
@@ -805,6 +817,16 @@ def ax_trusted():
         return bool(AXIsProcessTrusted())
     except Exception:
         return False
+
+
+class InputPanel(NSPanel):
+    """单行输入面板：无边框但能成为 key window"""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return True
 
 
 # ---------------------------------------------------------------- 气泡
@@ -971,6 +993,11 @@ class Whale(NSObject):
         self.hotkey = None
         self.settings_win = None
         self.danmaku = None
+        self.input_panel = None
+        self.input_field = None
+        self.input_monitor = None
+        self.modal = False
+        self.reply_event = threading.Event()
         return self
 
     # ---------- 窗口 ----------
@@ -1156,21 +1183,74 @@ class Whale(NSObject):
 
     @objc.python_method
     def ask_text(self):
-        from AppKit import NSAlert
+        """双击挂件 → 弹系统输入框（NSAlert）。必须先激活 App，否则收不到键盘。"""
+        self.close_input()
+        try:
+            from AppKit import NSAlert
 
-        a = NSAlert.alloc().init()
-        a.setMessageText_("打字说")
-        a.setInformativeText_("先不开口也行，打一句送给她")
-        a.addButtonWithTitle_("发送")
-        a.addButtonWithTitle_("取消")
-        f = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 24))
-        a.setAccessoryView_(f)
-        a.window().makeFirstResponder_(f)
-        if a.runModal() == 1000:
-            t = str(f.stringValue()).strip()
-            if t:
-                self.bubble.show_text(f"你说：{t}", 2.0)
-                self.send(t)
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            a = NSAlert.alloc().init()
+            icon = None
+            for cand in (os.path.join(HERE, "assets", "mascot.png"),) + tuple(ASSET_CANDIDATES):
+                if os.path.exists(cand):
+                    icon = NSImage.alloc().initWithContentsOfFile_(cand)
+                    if icon is not None:
+                        icon.setSize_(NSMakeSize(48, 48))
+                        break
+            if icon is not None:
+                a.setIcon_(icon)
+            a.setMessageText_("打字说")
+            a.setInformativeText_("回车发送，Esc 取消")
+            a.addButtonWithTitle_("发送")
+            a.addButtonWithTitle_("取消")
+            f = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+            f.setPlaceholderString_("说点什么…")
+            a.setAccessoryView_(f)
+            w = a.window()
+            w.setLevel_(3)
+            w.makeFirstResponder_(f)
+            log("输入框弹出")
+            self.modal = True
+            resp = a.runModal()
+            self.modal = False
+            if resp == 1000:
+                t = str(f.stringValue() or "").strip()
+                if t:
+                    self.bubble.show_text("你说：%s" % t, 2)
+                    self.send(t)
+            log("输入框关闭")
+        except Exception as e:
+            log("打开输入框失败", e)
+            self.bubble.show_text("输入框打不开：%s" % e, 5, error=True)
+
+    def sendFromButton_(self, sender):
+        self.sendInput_(self.input_field) if self.input_field is not None else None
+
+    def sendInput_(self, sender):
+        text = str(sender.stringValue() or "").strip()
+        self.close_input()
+        if not text:
+            return
+        self.bubble.show_text("你说：%s" % text, 2)
+        self.send(text)
+
+    @objc.python_method
+    def close_input(self):
+        try:
+            if self.input_panel is not None:
+                self.input_panel.orderOut_(None)
+                self.input_panel = None
+                self.input_field = None
+        except Exception:
+            pass
+        try:
+            if self.input_monitor is not None:
+                from AppKit import NSEvent
+
+                NSEvent.removeMonitor_(self.input_monitor)
+                self.input_monitor = None
+        except Exception:
+            pass
 
     # ---------- 陪看 ----------
     @objc.python_method
@@ -1383,6 +1463,12 @@ class Whale(NSObject):
         time.sleep(3.0)
         self.end_talk()
 
+    def typeMenu_(self, sender):
+        self.ask_text()
+
+    def doAsk_(self, sender):
+        self.ask_text()
+
     def testMic_(self, sender):
         self.test_mic()
 
@@ -1532,6 +1618,8 @@ class Whale(NSObject):
 
     def reshowNow_(self, tag):
         try:
+            if getattr(self, "modal", False):
+                return
             if self.settings.get("挂件", True):
                 self.win.orderFrontRegardless()
                 self.win.setAlphaValue_(1.0)
@@ -1586,6 +1674,9 @@ class Whale(NSObject):
         itc.setTarget_(self)
         m.addItem_(itc)
         m.addItem_(NSMenuItem.separatorItem())
+        it_t = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打字说…", "typeMenu:", "t")
+        it_t.setTarget_(self)
+        m.addItem_(it_t)
         it1 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打个招呼", "ping:", "")
         it1.setTarget_(self)
         m.addItem_(it1)
@@ -2019,7 +2110,7 @@ def mic_probe(seconds=2.0):
     return out
 
 
-def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=None, state=None):
+def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=None, state=None, on_type=None):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -2043,6 +2134,10 @@ def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=Non
             if path == "/show" and on_show:
                 on_show()
                 return self._send({"ok": True, "说": "挂件出来了"})
+            if path == "/type":
+                if on_type:
+                    on_type()
+                return self._send({"ok": True, "说": "打开输入框"})
             if path == "/rec-test":
                 r = Recorder()
                 r.start()
@@ -2084,6 +2179,12 @@ def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=Non
 
 # ---------------------------------------------------------------- 启动
 def main():
+    try:
+        import faulthandler
+
+        faulthandler.enable(file=open(os.path.join(HERE, "crash.log"), "a"))
+    except Exception:
+        pass
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
@@ -2126,6 +2227,9 @@ def main():
         on_hide=lambda: whale.performSelectorOnMainThread_withObject_waitUntilDone_(
             "hideWidget:", None, False
         ),
+        on_type=lambda: whale.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "doAsk:", None, False
+        ),
         state=lambda: {
             "version": VERSION,
             "watching": bool(whale.watching),
@@ -2153,6 +2257,13 @@ def main():
     item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
     item.button().setTitle_("🐋")
     menu = NSMenu.alloc().init()
+    m_type = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打字说…", "typeMenu:", "t")
+    m_type.setTarget_(whale)
+    menu.addItem_(m_type)
+    m_set = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("设置…", "openSettings:", ",")
+    m_set.setTarget_(whale)
+    menu.addItem_(m_set)
+    menu.addItem_(NSMenuItem.separatorItem())
     mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("退出", "quit:", "q")
     mi.setTarget_(whale)
     menu.addItem_(mi)
@@ -2212,6 +2323,12 @@ def main():
             whale.performSelectorOnMainThread_withObject_waitUntilDone_("recSelfTest:", None, False)
         threading.Thread(target=rec_hook, daemon=True).start()
 
+    if os.environ.get("FISH_TEST_INPUT"):
+        def run_input():
+            time.sleep(2.0)
+            whale.performSelectorOnMainThread_withObject_waitUntilDone_("doAsk:", None, False)
+        threading.Thread(target=run_input, daemon=True).start()
+
     if os.environ.get("FISH_TEST_SETTINGS"):
         def run_settings():
             time.sleep(1.5)
@@ -2227,8 +2344,8 @@ def main():
         threading.Thread(target=later, daemon=True).start()
 
     log("起来了：8778 收话，8777 送话")
-    bubble_tip = "按住鲸鱼说话 · 拖动走位 · 双击打字"
-    whale.bubble.show_text(bubble_tip, 5)
+    bubble_tip = "按住我说话 · 双击我打字 · 右键更多"
+    whale.bubble.show_text(bubble_tip, 8)
     app.run()
 
 

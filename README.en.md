@@ -85,6 +85,17 @@ python3 -m venv .venv
 > screen recording) binds permissions to the app bundle identity; running `python main.py`
 > directly cannot obtain them.
 
+## Usage
+
+| Want to | Do |
+|---|---|
+| Talk | Hold the icon (or `⌥Space`), release to send |
+| Type | **Double-click the icon**, or right-click → “打字说…”, or menu bar 🐋 → “打字说…” |
+| Persona / size | Right-click → “设置…” |
+| Watch toggle | Right-click → “陪看” |
+| Take a look | Right-click → “让她看一眼” |
+| Quit | Menu bar 🐋 → “退出” |
+
 ## Permissions
 
 | Permission | Used by | Without it |
