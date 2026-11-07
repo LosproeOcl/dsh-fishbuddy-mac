@@ -40,6 +40,7 @@ from AppKit import (
     NSMenuItem,
     NSObject,
     NSPanel,
+    NSPopUpButton,
     NSSegmentedControl,
     NSSlider,
     NSStatusBar,
@@ -75,7 +76,7 @@ DEFAULT_SETTINGS = {
     "尺寸": 132,          # 图标边长（像素）
     "弹幕": True,         # 她的回话同时以弹幕形式滑过屏幕
     "弹幕字号": 30,       # 弹幕字号（px）
-    "弹幕字体": "bold",   # bold / rounded / pingfang
+    "弹幕字体": "",       # 空 = 系统粗体；否则是系统字体族名
     "识别提示": "",       # 语音识别的上下文词（逗号分隔），提高专有名词准确率
     "断句秒": 1.3,        # 电话模式：安静多久算说完
     "音色": "system",     # system = 系统音色；edge = 晓晓（在线，更像真人）
@@ -164,7 +165,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -197,6 +198,31 @@ def request_mic():
         AVCaptureDevice.requestAccessForMediaType_completionHandler_(AVMediaTypeAudio, lambda ok: None)
     except Exception as e:
         log("申请麦克风失败", e)
+
+
+def system_font_families():
+    """系统里所有字体族（去重、排序）—— 下拉列表用"""
+    try:
+        from AppKit import NSFontManager
+
+        fams = [str(x) for x in (NSFontManager.sharedFontManager().availableFontFamilies() or [])]
+        return sorted({f.strip() for f in fams if f and f.strip()})
+    except Exception:
+        return ["PingFang SC"]
+
+
+def input_devices():
+    """[(index, name), …] —— 所有能录的设备"""
+    out = []
+    try:
+        import sounddevice as sd
+
+        for i, d in enumerate(sd.query_devices()):
+            if int(d.get("max_input_channels") or 0) > 0:
+                out.append((i, str(d.get("name") or ("设备 %d" % i))))
+    except Exception:
+        pass
+    return out
 
 
 def input_device_name():
@@ -265,7 +291,8 @@ def capture_screen(max_w=1280, quality=72):
 
 # ---------------------------------------------------------------- 录音
 class Recorder:
-    def __init__(self):
+    def __init__(self, device=None):
+        self.device = device
         self.frames = []
         self.stream = None
         self.started = 0.0
@@ -282,9 +309,12 @@ class Recorder:
                 if self.stream is not None:
                     self.frames.append(bytes(indata))
 
-        self.stream = sd.InputStream(
+        kwargs = dict(
             samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=1024, callback=cb
         )
+        if self.device is not None:
+            kwargs["device"] = self.device
+        self.stream = sd.InputStream(**kwargs)
         self.stream.start()
 
     def stop(self):
@@ -423,13 +453,15 @@ class Danmaku(NSObject):
             self.label.setEditable_(False)
             self.label.setSelectable_(False)
             size = float(self.parent.settings.get("弹幕字号") or 30)
-            fam = str(self.parent.settings.get("弹幕字体") or "bold")
+            fam = str(self.parent.settings.get("弹幕字体") or "")
             font = None
             try:
-                if fam == "rounded":
-                    font = NSFont.fontWithName_size_("PingFangSC-Semibold", size)
-                elif fam == "pingfang":
-                    font = NSFont.fontWithName_size_("PingFangSC-Regular", size)
+                if fam:
+                    from AppKit import NSFontManager
+
+                    font = NSFontManager.sharedFontManager().fontWithFamily_traits_weight_size_(
+                        fam, 0, 5, size
+                    )
             except Exception:
                 font = None
             self.label.setFont_(font or NSFont.boldSystemFontOfSize_(size))
@@ -983,6 +1015,17 @@ class Whale(NSObject):
         self.win.setMovableByWindowBackground_(False)
         self.win.setIgnoresMouseEvents_(False)
         self.win.setHidesOnDeactivate_(False)
+        try:
+            from AppKit import (
+                NSWindowCollectionBehaviorCanJoinAllSpaces,
+                NSWindowCollectionBehaviorStationary,
+            )
+
+            self.win.setCollectionBehavior_(
+                NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary
+            )
+        except Exception:
+            pass
 
         host = BallView.alloc().initWithParent_(self)
         self.view = host
@@ -1022,7 +1065,7 @@ class Whale(NSObject):
         if st == 0:
             request_mic()
         try:
-            self.rec = Recorder()
+            self.rec = Recorder(device=self.audio_device())
             self.rec.start()
             self.listening = True
             self.set_state("listen")
@@ -1161,7 +1204,7 @@ class Whale(NSObject):
 
         if silence is None:
             silence = float(self.settings.get("断句秒") or 1.3)
-        r = Recorder()
+        r = Recorder(device=self.audio_device())
         r.start()
         t0 = time.time()
         # 环境噪声
@@ -1172,7 +1215,7 @@ class Whale(NSObject):
         if raw0:
             a0 = np.frombuffer(raw0, dtype=np.int16)
             floor = float(np.percentile(np.abs(a0), 90)) if a0.size else 0.0
-        thresh = max(420.0, floor * 3.5)
+        thresh = max(130.0, floor * 3.0)   # 系统小麦克风电平低，阈值也跟着降
         spoke = False
         speak_start = 0.0
         last_loud = 0.0
@@ -1233,11 +1276,17 @@ class Whale(NSObject):
             except Exception:
                 pass
             if not txt:
-                log("电话模式：没听清（%s）" % (err or "无文本"))
+                log("电话模式：没听清（%s，峰值 %.0f）" % (err or "无文本", peak))
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "uiInfo:", "没听清（峰值 %.0f）—— 换个麦克风或靠近点说" % peak, False
+                )
                 continue
             self.performSelectorOnMainThread_withObject_waitUntilDone_("uiHeard:", txt, False)
             self.reply_event.clear()
-            self.reply_event.wait(90)
+            if not self.reply_event.wait(90):
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "uiInfo:", "她 90 秒没回——看看会话是不是卡住了", False
+                )
             # 等朗读真的说完再开口——不然会把自己的声音录进去
             for _ in range(120):
                 if not self.tts or not self.tts.is_speaking():
@@ -1413,6 +1462,16 @@ class Whale(NSObject):
 
     def lookMenu_(self, sender):
         self.look_now()
+
+    @objc.python_method
+    def audio_device(self):
+        idx = self.settings.get("麦克风")
+        try:
+            if idx is None or idx == "":
+                return None
+            return int(idx)
+        except Exception:
+            return None
 
     @objc.python_method
     def test_mic(self):
@@ -1597,6 +1656,15 @@ class Whale(NSObject):
         save_settings(self.settings)
         self.apply_widget_enabled(False)
 
+    def reshowNow_(self, tag):
+        try:
+            if self.settings.get("挂件", True):
+                self.win.orderFrontRegardless()
+                self.win.setAlphaValue_(1.0)
+            log("重新显示(%s)：visible=%s" % (tag, self.win.isVisible()))
+        except Exception as e:
+            log("重新显示失败", e)
+
     def showWidget_(self, sender):
         self.settings["挂件"] = True
         save_settings(self.settings)
@@ -1685,7 +1753,7 @@ class SettingsWindow(NSObject):
 
     @objc.python_method
     def build(self):
-        w, h = 520.0, 840.0
+        w, h = 520.0, 900.0
         self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, w, h),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
@@ -1826,17 +1894,15 @@ class SettingsWindow(NSObject):
         v.addSubview_(self.slider_dm)
         self.lbl_dm = label("30 px", 392, y + 3, 80, size=11, gray=True)
 
-        # 11) 弹幕字体
+        # 11) 弹幕字体（列出系统里所有字体族）
         y -= 36
         label("弹幕字体", 20, y + 3, 80)
-        self.seg_font = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(104, y - 1, 300, 26))
-        self.seg_font.setSegmentCount_(3)
-        self.seg_font.setLabel_forSegment_("粗黑", 0)
-        self.seg_font.setLabel_forSegment_("圆体", 1)
-        self.seg_font.setLabel_forSegment_("苹方", 2)
-        self.seg_font.setTarget_(self)
-        self.seg_font.setAction_("danmakuFontChanged:")
-        v.addSubview_(self.seg_font)
+        self.pop_font = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(104, y - 3, 320, 28), False
+        )
+        self.pop_font.setTarget_(self)
+        self.pop_font.setAction_("fontPicked:")
+        v.addSubview_(self.pop_font)
 
         # 12) 断句秒
         y -= 38
@@ -1851,6 +1917,16 @@ class SettingsWindow(NSObject):
         v.addSubview_(self.step_sil)
         self.lbl_sil = label("1.3 秒", 138, y + 3, 90)
         label("电话模式里安静多久算说完", 240, y + 3, 250, size=11, gray=True)
+
+        # 12.5) 麦克风
+        y -= 38
+        label("麦克风", 20, y + 3, 80)
+        self.pop_mic = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(104, y - 3, 320, 28), False
+        )
+        self.pop_mic.setTarget_(self)
+        self.pop_mic.setAction_("micPicked:")
+        v.addSubview_(self.pop_mic)
 
         # 13) 识别提示
         y -= 40
@@ -1885,9 +1961,30 @@ class SettingsWindow(NSObject):
         self.seg_voice.setSelectedSegment_(1 if st.get("音色") == "edge" else 0)
         self.slider_dm.setIntegerValue_(int(st.get("弹幕字号") or 30))
         self.lbl_dm.setStringValue_("%d px" % int(st.get("弹幕字号") or 30))
-        self.seg_font.setSelectedSegment_(
-            {"bold": 0, "rounded": 1, "pingfang": 2}.get(st.get("弹幕字体"), 0)
-        )
+        fams = ["系统粗体"] + system_font_families()
+        cur_font = str(st.get("弹幕字体") or "")
+        if cur_font in ("bold", "rounded", "pingfang"):
+            cur_font = ""
+        title = cur_font or "系统粗体"
+        if title not in fams:
+            fams.insert(1, title)
+        if self.pop_font.numberOfItems() != len(fams):
+            self.pop_font.removeAllItems()
+            self.pop_font.addItemsWithTitles_(fams)
+        self.pop_font.selectItemWithTitle_(title)
+
+        devs = input_devices()
+        self.mic_items = [(None, "系统默认")] + devs
+        titles = [n for _, n in self.mic_items]
+        if self.pop_mic.numberOfItems() != len(titles):
+            self.pop_mic.removeAllItems()
+            self.pop_mic.addItemsWithTitles_(titles)
+        cur = st.get("麦克风")
+        idx = 0
+        for i, (d, _n) in enumerate(self.mic_items):
+            if d is not None and cur is not None and int(d) == int(cur):
+                idx = i
+        self.pop_mic.selectItemAtIndex_(idx)
         self.step_sil.setDoubleValue_(float(st.get("断句秒") or 1.3))
         self.lbl_sil.setStringValue_("%.1f 秒" % float(st.get("断句秒") or 1.3))
         self.fld_hint.setStringValue_(str(st.get("识别提示") or ""))
@@ -1939,6 +2036,24 @@ class SettingsWindow(NSObject):
         self.lbl_dm.setStringValue_("%d px" % px)
         self.whale.settings["弹幕字号"] = px
         save_settings(self.whale.settings)
+
+    def fontPicked_(self, sender):
+        fam = str(sender.titleOfSelectedItem() or "").strip()
+        if fam == "系统粗体":
+            fam = ""
+        self.whale.settings["弹幕字体"] = fam
+        save_settings(self.whale.settings)
+
+    def micPicked_(self, sender):
+        i = int(sender.indexOfSelectedItem())
+        items = getattr(self, "mic_items", [(None, "系统默认")])
+        if 0 <= i < len(items):
+            dev = items[i][0]
+            self.whale.settings["麦克风"] = dev
+            save_settings(self.whale.settings)
+            self.whale.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "uiInfo:", "麦克风：%s" % items[i][1], False
+            )
 
     def danmakuFontChanged_(self, sender):
         self.whale.settings["弹幕字体"] = {0: "bold", 1: "rounded", 2: "pingfang"}.get(
@@ -2272,6 +2387,12 @@ def main():
                 "openSettings:", None, False
             )
         threading.Thread(target=run_settings, daemon=True).start()
+
+    for delay, tag in ((1.5, "1.5s"), (5.0, "5s")):
+        def later(t=tag):
+            time.sleep(delay)
+            whale.performSelectorOnMainThread_withObject_waitUntilDone_("reshowNow:", t, False)
+        threading.Thread(target=later, daemon=True).start()
 
     log("起来了：8778 收话，8777 送话")
     bubble_tip = "按住鲸鱼说话 · 拖动走位 · 双击打字"
