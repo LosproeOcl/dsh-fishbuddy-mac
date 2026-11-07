@@ -1,15 +1,13 @@
 /**
  * dsh-fishbuddy-mac —— 宿主半边
  *
- * 干的四件事：
- *   1. 在本机开 127.0.0.1:8777，收挂件说的话（/hands/say）和截图（/hands/frame）
+ * 干什么：
+ *   1. 在本机 127.0.0.1:8777 收挂件说的话（/hands/say）和截图（/hands/frame）
  *   2. 把话送进你绑定的那间会话；一轮说完，把最后那段回话 POST 回挂件（默认 8778）
- *   3. 设置页接口：读写配置、列会话、启动挂件、打开挂件设置
+ *   3. 设置页接口：状态、会话列表、自检、启动挂件、打开挂件设置、露头/藏起来
  *   4. 设置页 UI 在 lib/client.js
  *
  * 配置：~/.dsh/fishbuddy-mac-plugin.json
- *   { "会话": "session-…", "回调": "http://127.0.0.1:8778/hands/reply",
- *     "挂件路径": "/Users/you/Applications/DSH-FishBuddy.app", "端口": 8777 }
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -21,6 +19,8 @@ const HOME = process.env.HOME || os.homedir()
 const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh')
 const CONFIG_PATH = path.join(DSH_HOME, 'fishbuddy-mac-plugin.json')
 const DEFAULT_APP = path.join(HOME, '.dsh', 'whale-work', 'fishbuddy-mac', 'DSH-FishBuddy.app')
+
+const VERSION = '0.6.0'
 
 const DEFAULT_CONFIG = {
   会话: '',
@@ -69,7 +69,6 @@ async function readBody(req, limit = 12 * 1024 * 1024) {
   }
 }
 
-/** 从 message.content 里把文字抠出来 */
 function textOf(message) {
   const content = message?.content ?? message?.parts ?? []
   const parts = Array.isArray(content) ? content : [content]
@@ -89,10 +88,23 @@ export default {
 
   apply(ctx) {
     const log = (...a) => console.log('[fishbuddy-mac]', ...a)
-    const state = { lastReply: '', frames: 0, says: 0, serverOk: false, serverErr: '' }
-    const pending = new Map() // sessionId -> { turn, text }
+    const state = {
+      lastReply: '',
+      lastReplyAt: 0,
+      says: 0,
+      frames: 0,
+      serverOk: false,
+      serverErr: '',
+      startedAt: Date.now(),
+      events: [],
+    }
+    const pending = new Map()
 
-    // ---------- 信任栅栏：只允许本机 / DSH 认可的来源 ----------
+    function note(kind, text) {
+      state.events.push({ at: Date.now(), kind, text: String(text ?? '').slice(0, 120) })
+      if (state.events.length > 40) state.events.shift()
+    }
+
     function rejected(req, res) {
       try {
         const conn = ctx.get('connection') || ctx.connection
@@ -104,9 +116,8 @@ export default {
           return true
         }
       } catch {
-        /* 落到下面 fail-closed */
+        /* fail-closed below */
       }
-      // 栅栏不可用：只放行回环 Host
       const host = String(req.headers?.host ?? '').toLowerCase()
       const name = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]
       if (name === '127.0.0.1' || name === 'localhost' || name === '[::1]') return false
@@ -134,7 +145,48 @@ export default {
       routes.push(dispose)
     }
 
-    // ---------- 会话投递 ----------
+    // ---------- 会话 ----------
+    function listSessions() {
+      const root = path.join(DSH_HOME, 'sessions')
+      const cacheRoot = path.join(DSH_HOME, 'storages', 'session_projcache', 'sessions')
+      const out = []
+      let dirs = []
+      try {
+        dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory())
+      } catch {
+        return out
+      }
+      for (const ws of dirs) {
+        let ids = []
+        try {
+          ids = fs
+            .readdirSync(path.join(root, ws.name), { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+        } catch {
+          continue
+        }
+        for (const id of ids) {
+          const file = path.join(root, ws.name, id.name, 'session.v4.jsonl.zstd')
+          let st
+          try {
+            st = fs.statSync(file)
+          } catch {
+            continue
+          }
+          let title = ''
+          try {
+            const c = JSON.parse(fs.readFileSync(path.join(cacheRoot, id.name + '.json'), 'utf8'))
+            title = String(c?.record?.rows?.title?.val ?? '')
+          } catch {
+            /* 没缓存就没有标题 */
+          }
+          out.push({ id: id.name, workspace: ws.name, title, mtime: st.mtimeMs })
+        }
+      }
+      out.sort((a, b) => b.mtime - a.mtime)
+      return out.slice(0, 80)
+    }
+
     async function deliver(text, sessionId) {
       const controller = ctx.get('sessionController') || ctx.sessionController
       if (!controller) throw new Error('sessionController 不可用')
@@ -157,10 +209,34 @@ export default {
         ac.signal,
       )
       state.says += 1
+      note('say', text)
       return target
     }
 
-    // ---------- 回话递回挂件 ----------
+    // ---------- 挂件 ----------
+    function widgetBase() {
+      const cfg = readConfig()
+      return String(cfg.回调 || '').replace(/\/hands\/reply.*$/, '') || 'http://127.0.0.1:8778'
+    }
+
+    async function widgetState() {
+      try {
+        const r = await fetch(widgetBase() + '/state', { signal: AbortSignal.timeout(1500) })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        return { ok: true, ...(await r.json()) }
+      } catch (e) {
+        return { ok: false, error: String(e?.message ?? e) }
+      }
+    }
+
+    async function widgetCall(p) {
+      const r = await fetch(widgetBase() + p, {
+        method: 'POST',
+        signal: AbortSignal.timeout(2500),
+      })
+      return { ok: r.ok, 说: (await r.text()).slice(0, 200) }
+    }
+
     async function pushReply(text) {
       const cfg = readConfig()
       if (!cfg.回调 || !text) return
@@ -171,12 +247,15 @@ export default {
           body: JSON.stringify({ text }),
         })
         if (!r.ok) throw new Error('HTTP ' + r.status)
+        state.lastReply = text
+        state.lastReplyAt = Date.now()
+        note('reply', text)
       } catch (e) {
+        note('reply-error', String(e?.message ?? e))
         log('回话没递到挂件：', e?.message ?? e)
       }
     }
 
-    // 一轮说完 → 把最后那段回话递回去
     const off = ctx.on('session/event', (session, event) => {
       const cfg = readConfig()
       const sid = String(session?.id ?? '')
@@ -194,7 +273,6 @@ export default {
         const got = pending.get(sid)
         pending.delete(sid)
         if (!done || !got || got.turn !== data.turn) return
-        state.lastReply = got.text
         void pushReply(got.text)
       }
     })
@@ -206,7 +284,7 @@ export default {
       }
     })
 
-    // ---------- 挂件那半边：8777 ----------
+    // 8777：挂件说话 / 截图
     let server = null
     function startWidgetServer() {
       const cfg = readConfig()
@@ -214,7 +292,7 @@ export default {
       server = http.createServer(async (req, res) => {
         const p = String(req.url || '/').split('?')[0]
         if (req.method === 'GET' && (p === '/hands/ping' || p === '/ping')) {
-          return json(res, 200, { ok: true, 说: '大肥鱼插件在这儿' })
+          return json(res, 200, { ok: true, 说: '大肥鱼插件在这儿', 版本: VERSION })
         }
         if (req.method !== 'POST') return json(res, 405, { ok: false, 说: '要 POST' })
         try {
@@ -234,11 +312,9 @@ export default {
             const file = path.join(dir, `frame-${Date.now()}.jpg`)
             fs.writeFileSync(file, Buffer.from(b64, 'base64'))
             state.frames += 1
-            const immediate = Number(body.立即) === 1
-            if (immediate) {
-              const cfg2 = readConfig()
-              await deliver(`（挂件截了一张屏：${file}）` + (body.来源 ? ` 来源：${body.来源}` : ''),
-                cfg2.会话)
+            note('frame', `${Math.round(Buffer.byteLength(b64, 'base64') / 1024)}KB`)
+            if (Number(body.立即) === 1) {
+              await deliver(`（挂件截了一张屏：${file}）` + (body.来源 ? ` 来源：${body.来源}` : ''))
               return json(res, 200, { ok: true, 说: '发了，等她说' })
             }
             return json(res, 200, { ok: true, 说: '存着了', 存: file })
@@ -254,13 +330,14 @@ export default {
         state.serverErr = String(e?.message ?? e)
         const busy = String(e?.code || '') === 'EADDRINUSE'
         log('挂件口子起不来：', state.serverErr)
-        // 端口被别的插件占着（比如装过原版 dsh-fish-buddy）→ 隔一会儿再试
         if (busy && retry < 60) {
           retry += 1
           setTimeout(() => {
             try {
               server.listen(port, '127.0.0.1')
-            } catch {}
+            } catch {
+              /* ignore */
+            }
           }, 5000)
         }
       })
@@ -269,26 +346,29 @@ export default {
         state.serverErr = ''
         log(`挂件口子开着：127.0.0.1:${port}`)
       })
-      return () => {
-        try {
-          server?.close()
-        } catch {
-          /* ignore */
-        }
-      }
     }
     ctx.effect(() => startWidgetServer())
 
     // ---------- 设置页接口 ----------
     route('GET', '/dsh-fishbuddy/api/state', async (req, res) => {
       const cfg = readConfig()
+      const widget = await widgetState()
       json(res, 200, {
         ok: true,
+        version: VERSION,
         config: cfg,
         server: { ok: state.serverOk, error: state.serverErr, port: cfg.端口 },
+        widget,
         counts: { says: state.says, frames: state.frames },
         lastReply: state.lastReply,
+        lastReplyAt: state.lastReplyAt,
+        uptimeSec: Math.round((Date.now() - state.startedAt) / 1000),
+        events: state.events.slice(-12),
       })
+    })
+
+    route('GET', '/dsh-fishbuddy/api/sessions', async (req, res) => {
+      json(res, 200, { ok: true, sessions: listSessions() })
     })
 
     route('POST', '/dsh-fishbuddy/api/config', async (req, res) => {
@@ -299,57 +379,71 @@ export default {
       }
       if (Number(body.端口) > 0) next.端口 = Number(body.端口)
       writeConfig(next)
+      note('config', '保存配置')
       json(res, 200, { ok: true, config: next })
     })
 
-    route('GET', '/dsh-fishbuddy/api/sessions', async (req, res) => {
-      const controller = ctx.get('sessionController') || ctx.sessionController
-      const out = []
-      try {
-        const list = controller?.list?.() ?? []
-        for (const s of list) out.push({ id: s.id ?? s.sessionId, title: s.title ?? '' })
-      } catch {
-        /* ignore */
+    // 自检：一条一条查，返回 checklist
+    route('POST', '/dsh-fishbuddy/api/doctor', async (req, res) => {
+      const cfg = readConfig()
+      const checks = []
+      const push = (name, ok, detail) => checks.push({ name, ok, detail })
+
+      push('配置文件', fs.existsSync(CONFIG_PATH), CONFIG_PATH)
+      push('挂件口子', state.serverOk, state.serverOk ? `127.0.0.1:${cfg.端口}` : state.serverErr)
+
+      const w = await widgetState()
+      push('挂件在线', !!w.ok, w.ok ? `版本 ${w.version || '?'}` : String(w.error || '没应答'))
+      if (w.ok) {
+        push('挂件形象', true, w["形象"] === 'minimal' ? '极简圆点' : '素材形象')
+        push('陪看', true, w.watching ? '开着' : '关着')
       }
-      json(res, 200, { ok: true, sessions: out })
+
+      const app = String(cfg.挂件路径 || '')
+      push('挂件 App', !!app && fs.existsSync(app), app || '没填')
+
+      const sid = String(cfg.会话 || '')
+      const hit = listSessions().find((x) => x.id === sid)
+      push('绑定会话', !!hit, hit ? hit.title || hit.id : sid ? sid + '（磁盘上没找到）' : '还没选')
+
+      push('回调地址', /^http:\/\/127\.0\.0\.1:\d+\//.test(String(cfg.回调)), String(cfg.回调))
+
+      json(res, 200, { ok: true, checks })
     })
 
-    // 打开挂件设置（挂件在 8778 上开了 /settings）
+    route('POST', '/dsh-fishbuddy/api/launch', async (req, res) => {
+      const app = String(readConfig().挂件路径 || '')
+      if (!app || !fs.existsSync(app)) {
+        return json(res, 200, { ok: false, 说: '找不到挂件：在设置里填 .app 的完整路径' })
+      }
+      execFile('open', ['-a', app], (err) => {
+        if (err) return json(res, 200, { ok: false, 说: String(err.message) })
+        json(res, 200, { ok: true, 说: '挂件起来了' })
+      })
+    })
+
     route('POST', '/dsh-fishbuddy/api/open-widget-settings', async (req, res) => {
-      const cfg = readConfig()
-      const base = String(cfg.回调 || '').replace(/\/hands\/reply.*$/, '')
-      const url = (base || 'http://127.0.0.1:8778') + '/settings'
       try {
-        const r = await fetch(url, { method: 'POST' })
-        const body = await r.text()
-        json(res, 200, { ok: r.ok, 说: body.slice(0, 200) })
+        json(res, 200, { ok: true, ...(await widgetCall('/settings')) })
       } catch (e) {
         json(res, 200, { ok: false, 说: '挂件没在跑：' + String(e?.message ?? e) })
       }
     })
 
     route('POST', '/dsh-fishbuddy/api/show-widget', async (req, res) => {
-      const cfg = readConfig()
-      const base = String(cfg.回调 || '').replace(/\/hands\/reply.*$/, '')
       try {
-        const r = await fetch((base || 'http://127.0.0.1:8778') + '/show', { method: 'POST' })
-        json(res, 200, { ok: r.ok })
+        json(res, 200, { ok: true, ...(await widgetCall('/show')) })
       } catch (e) {
         json(res, 200, { ok: false, 说: String(e?.message ?? e) })
       }
     })
 
-    // 启动挂件（open -a），给第一次用的人省一步
-    route('POST', '/dsh-fishbuddy/api/launch', async (req, res) => {
-      const cfg = readConfig()
-      const app = String(cfg.挂件路径 || '')
-      if (!app || !fs.existsSync(app)) {
-        return json(res, 200, { ok: false, 说: '找不到挂件：在设置里填 .app 的路径' })
+    route('POST', '/dsh-fishbuddy/api/hide-widget', async (req, res) => {
+      try {
+        json(res, 200, { ok: true, ...(await widgetCall('/hide')) })
+      } catch (e) {
+        json(res, 200, { ok: false, 说: String(e?.message ?? e) })
       }
-      execFile('open', ['-a', app], (err) => {
-        if (err) return json(res, 200, { ok: false, 说: String(err.message) })
-        json(res, 200, { ok: true, 说: '挂件起来了' })
-      })
     })
 
     route('POST', '/dsh-fishbuddy/api/say', async (req, res) => {

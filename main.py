@@ -154,7 +154,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -248,7 +248,7 @@ class Recorder:
         self.stream.start()
 
     def stop(self):
-        """返回 wav 路径；没录到东西返回 None"""
+        """返回 (wav 路径, 峰值)；没录到东西返回 (None, 0)"""
         with self.lock:
             st, self.stream = self.stream, None
             frames = self.frames
@@ -259,17 +259,35 @@ class Recorder:
                 st.close()
             except Exception as e:
                 log("录音收尾出错", e)
-        if not frames or time.time() - self.started < 0.25:
-            return None
+        if not frames or time.time() - self.started < 0.2:
+            return None, 0.0
+        raw = b"".join(frames)
+        peak = 0.0
+        if raw:
+            import numpy as np
+
+            a = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            peak = float(abs(a).max()) if a.size else 0.0
+            loud = np.where(np.abs(a) > max(150.0, peak * 0.06))[0]
+            if loud.size:
+                pad = int(SAMPLE_RATE * 0.15)
+                a = a[max(0, int(loud[0]) - pad):min(a.size, int(loud[-1]) + pad)]
+            cur = float(abs(a).max()) if a.size else 0.0
+            gain = 1.0
+            if 0 < cur < 26000:
+                gain = min(8.0, 26000.0 / cur)
+            if gain > 1.0:
+                a = np.clip(a * gain, -32768, 32767)
+            raw = a.astype(np.int16).tobytes()
+            log("录音：峰值 %.0f，增益 %.1fx，%.2fs" % (peak, gain, a.size / SAMPLE_RATE))
         fd, path = tempfile.mkstemp(suffix=".wav", prefix="fishbuddy-")
         os.close(fd)
         with wave.open(path, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(SAMPLE_RATE)
-            w.writeframes(b"".join(frames))
-        return path
-
+            w.writeframes(raw)
+        return path, peak
 
 # ---------------------------------------------------------------- 语音识别
 class Speech:
@@ -285,7 +303,18 @@ class Speech:
         from Speech import SFSpeechRecognizer
         SFSpeechRecognizer.requestAuthorization_(lambda status: done(int(status)))
 
-    def transcribe(self, wav_path, timeout=20.0):
+    def transcribe(self, wav_path, timeout=25.0):
+        """先试离线识别；没结果就退回在线识别。返回 (文字, 错误)"""
+        txt, err = self._recognize(wav_path, on_device=True, timeout=timeout)
+        if txt:
+            return txt, None
+        log("离线识别没结果（%s），改用在线识别再试" % (err or "无文本"))
+        txt2, err2 = self._recognize(wav_path, on_device=False, timeout=timeout)
+        if txt2:
+            return txt2, None
+        return None, err2 or err
+
+    def _recognize(self, wav_path, on_device, timeout):
         from Speech import SFSpeechRecognizer, SFSpeechURLRecognitionRequest
 
         rec = SFSpeechRecognizer.alloc().initWithLocale_(
@@ -298,7 +327,7 @@ class Speech:
         )
         req.setShouldReportPartialResults_(False)
         try:
-            req.setRequiresOnDeviceRecognition_(True)
+            req.setRequiresOnDeviceRecognition_(bool(on_device))
         except Exception:
             pass
 
@@ -307,7 +336,9 @@ class Speech:
 
         def handler(result, error):
             if result is not None and result.bestTranscription() is not None:
-                box["text"] = str(result.bestTranscription().formattedString())
+                t = str(result.bestTranscription().formattedString()).strip()
+                if t:
+                    box["text"] = t
                 if result.isFinal():
                     ev.set()
             if error is not None:
@@ -321,9 +352,8 @@ class Speech:
         except Exception:
             pass
         if box.get("text"):
-            return box["text"].strip(), None
+            return box["text"], None
         return None, box.get("error") or "没听清（超时）"
-
 
 def placeholder_image():
     from AppKit import NSColor, NSImage, NSMakeRect
@@ -707,7 +737,11 @@ class Whale(NSObject):
             return
         self.listening = False
         self.set_state("think")
-        wav = self.rec.stop()
+        wav, peak = self.rec.stop()
+        if peak < 60:
+            self.set_state("idle")
+            self.bubble.show_text("几乎没收到声音——看看麦克风是不是选错了", 5, error=True)
+            return
         if not wav:
             self.set_state("idle")
             self.bubble.show_text("太短了，按住多说一会儿～", 3)
@@ -932,6 +966,40 @@ class Whale(NSObject):
     def lookMenu_(self, sender):
         self.look_now()
 
+    @objc.python_method
+    def test_mic(self):
+        """录 3 秒：先报电平，再报识别结果——排查「no speech detected」用"""
+        if self.busy:
+            return
+        self.busy = True
+        self.bubble.show_text("测试中：说句话（3 秒）", 4)
+
+        def run():
+            try:
+                self.rec.start()
+                time.sleep(3.0)
+                wav, peak = self.rec.stop()
+                if not wav:
+                    raise RuntimeError("没录到音频")
+                txt, err = self.speech.transcribe(wav)
+                try:
+                    os.unlink(wav)
+                except Exception:
+                    pass
+                if txt:
+                    msg = "峰值 %.0f ✓ 识别到：%s" % (peak, txt)
+                else:
+                    msg = "峰值 %.0f · 识别失败：%s" % (peak, err or "无文本")
+            except Exception as e:
+                msg = "测试失败：%s" % e
+            self.busy = False
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("uiInfo:", msg, False)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def testMic_(self, sender):
+        self.test_mic()
+
     def speakMenu_(self, sender):
         self.settings["朗读"] = not self.settings.get("朗读")
         save_settings(self.settings)
@@ -1061,6 +1129,11 @@ class Whale(NSObject):
         elif name == "设置":
             self.openSettings_(None)
 
+    def hideWidget_(self, sender):
+        self.settings["挂件"] = False
+        save_settings(self.settings)
+        self.apply_widget_enabled(False)
+
     def showWidget_(self, sender):
         self.settings["挂件"] = True
         save_settings(self.settings)
@@ -1083,6 +1156,9 @@ class Whale(NSObject):
         itl = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("让她看一眼", "lookMenu:", "")
         itl.setTarget_(self)
         m.addItem_(itl)
+        itt = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("测试麦克风 / 语音识别", "testMic:", "")
+        itt.setTarget_(self)
+        m.addItem_(itt)
         its = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打开屏幕录制设置", "openScreenSettings:", "")
         its.setTarget_(self)
         m.addItem_(its)
@@ -1340,7 +1416,7 @@ class ReplyServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def start_reply_server(on_text, on_open_settings=None, on_show=None, state=None):
+def start_reply_server(on_text, on_open_settings=None, on_show=None, on_hide=None, state=None):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -1358,6 +1434,9 @@ def start_reply_server(on_text, on_open_settings=None, on_show=None, state=None)
             if path == "/settings" and on_open_settings:
                 on_open_settings()
                 return self._send({"ok": True, "说": "设置打开了"})
+            if path == "/hide" and on_hide:
+                on_hide()
+                return self._send({"ok": True, "说": "挂件藏起来了"})
             if path == "/show" and on_show:
                 on_show()
                 return self._send({"ok": True, "说": "挂件出来了"})
@@ -1429,6 +1508,9 @@ def main():
         on_show=lambda: whale.performSelectorOnMainThread_withObject_waitUntilDone_(
             "showWidget:", None, False
         ),
+        on_hide=lambda: whale.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "hideWidget:", None, False
+        ),
         state=lambda: {
             "version": VERSION,
             "watching": bool(whale.watching),
@@ -1478,7 +1560,7 @@ def main():
                 r = Recorder()
                 r.start()
                 time.sleep(1.5)
-                wav = r.stop()
+                wav, peak = r.stop()
                 import wave as _w
                 n = 0
                 if wav:

@@ -1,11 +1,8 @@
 /**
  * dsh-fishbuddy-mac —— 客户端半边：DSH「设置 → 大肥鱼」
  *
- * 只做四件事：
- *   1. 选会话（送到哪一间）
- *   2. 启动挂件 / 打开挂件设置 / 让挂件露头
- *   3. 保存配置（每次保存整份，未显示的字段不会被抹掉）
- *   4. 显示插件与挂件的连通状态
+ * 分区：概览 / 会话 / 挂件 / 诊断 / 高级 / 最近事件
+ * 数据都走同源的 /dsh-fishbuddy/api/*（DSH 自己的登录态 + 信任栅栏）。
  */
 window.__ModuleLoader__.load({
   id: "dsh-fishbuddy-mac",
@@ -20,29 +17,33 @@ window.__ModuleLoader__.load({
     const API = "/dsh-fishbuddy/api";
 
     const S = {
-      wrap: { maxWidth: 720, color: "var(--dsw-alias-label-primary)", fontSize: 13 },
-      title: { fontSize: 16, fontWeight: 500, margin: "0 0 6px" },
-      intro: { color: "var(--dsw-alias-label-tertiary)", margin: "0 0 12px", lineHeight: "20px" },
-      row: {
-        display: "flex",
-        gap: 12,
-        alignItems: "flex-start",
-        padding: "10px 0",
-        borderBottom: ".5px solid var(--dsw-alias-border-l2)",
-        flexWrap: "wrap",
+      wrap: { maxWidth: 780, color: "var(--dsw-alias-label-primary)", fontSize: 13 },
+      title: { fontSize: 16, fontWeight: 600, margin: "0 0 6px" },
+      intro: { color: "var(--dsw-alias-label-tertiary)", margin: "0 0 14px", lineHeight: "20px" },
+      card: {
+        border: ".5px solid var(--dsw-alias-border-l2)",
+        borderRadius: 10,
+        padding: "12px 14px",
+        marginBottom: 12,
       },
-      label: { minWidth: 120, fontWeight: 500 },
+      h3: { fontSize: 13, fontWeight: 600, margin: "0 0 8px" },
+      row: { display: "flex", gap: 12, alignItems: "flex-start", padding: "7px 0", flexWrap: "wrap" },
+      label: { minWidth: 104, color: "var(--dsw-alias-label-secondary)" },
+      val: { flex: 1, minWidth: 220 },
       hint: { color: "var(--dsw-alias-label-tertiary)", fontSize: 11.5, lineHeight: "17px", marginTop: 3 },
+      ok: { color: "var(--dsw-alias-state-success-primary, #2ea043)" },
+      bad: { color: "var(--dsw-alias-state-error-primary)" },
       input: {
         background: "transparent",
         border: "1px solid var(--dsw-alias-border-l2)",
         borderRadius: 6,
         color: "var(--dsw-alias-label-primary)",
         fontSize: 12.5,
-        height: 28,
+        height: 30,
         padding: "0 8px",
-        minWidth: 320,
         outline: "none",
+        width: "100%",
+        boxSizing: "border-box",
       },
       btn: {
         background: "var(--dsw-alias-brand-primary)",
@@ -64,41 +65,66 @@ window.__ModuleLoader__.load({
         padding: "0 12px",
         cursor: "pointer",
       },
-      out: {
-        whiteSpace: "pre-wrap",
+      mono: { fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace", fontSize: 11.5 },
+      log: {
+        maxHeight: 180,
+        overflow: "auto",
         background: "rgba(127,127,127,.08)",
         borderRadius: 8,
-        padding: "10px 12px",
-        marginTop: 10,
-        color: "var(--dsw-alias-label-secondary)",
-        fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace",
-        fontSize: 11.5,
+        padding: "8px 10px",
+        lineHeight: "18px",
       },
-      err: { color: "var(--dsw-alias-state-error-primary)", marginTop: 8, whiteSpace: "pre-line" },
     };
 
     async function call(path, opts) {
-      const r = await fetch(API + path, {
-        headers: { "content-type": "application/json" },
-        ...opts,
-      });
+      const r = await fetch(API + path, { headers: { "content-type": "application/json" }, ...opts });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.ok === false) throw new Error(j.error || j["说"] || "HTTP " + r.status);
+      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+      if (j.ok === false) throw new Error(j["说"] || j.error || "失败");
       return j;
     }
 
+    const when = (ms) => {
+      if (!ms) return "—";
+      const d = new Date(ms);
+      const p = (n) => String(n).padStart(2, "0");
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+
+    function Row(props) {
+      return h(
+        "div",
+        { style: S.row },
+        h("div", { style: S.label }, props.label),
+        h("div", { style: { ...S.val, ...(props.st || {}) } }, props.children),
+      );
+    }
+
+    function Badge({ ok, text }) {
+      return h("span", { style: ok ? S.ok : S.bad }, (ok ? "✓ " : "✗ ") + text);
+    }
+
+    function Section(props) {
+      return h(
+        "div",
+        { style: { ...S.card, ...(props.style || {}) } },
+        h("div", { style: S.h3 }, props.title),
+        props.children,
+      );
+    }
+
     function FishBuddySection() {
-      const [cfg, setCfg] = useState(null);
+      const [d, setD] = useState(null);
       const [sessions, setSessions] = useState([]);
-      const [state, setState] = useState(null);
+      const [checks, setChecks] = useState(null);
       const [msg, setMsg] = useState("");
       const [busy, setBusy] = useState("");
+      const [test, setTest] = useState("");
 
       const load = useCallback(async () => {
         try {
-          const [s, ss] = await Promise.all([call("/state"), call("/sessions")]);
-          setCfg(s.config);
-          setState(s);
+          const [st, ss] = await Promise.all([call("/state"), call("/sessions")]);
+          setD(st);
           setSessions(ss.sessions || []);
           setMsg("");
         } catch (e) {
@@ -110,11 +136,12 @@ window.__ModuleLoader__.load({
         void load();
       }, [load]);
 
-      const save = async () => {
-        setBusy("save");
+      const run = async (name, fn, okText) => {
+        setBusy(name);
+        setMsg("");
         try {
-          await call("/config", { method: "POST", body: JSON.stringify(cfg) });
-          setMsg("✓ 存好了");
+          const r = await fn();
+          if (okText !== false) setMsg("✓ " + (okText || r?.["说"] || "好了"));
           await load();
         } catch (e) {
           setMsg(String(e.message || e));
@@ -123,24 +150,17 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const act = async (name, path, okText) => {
-        setBusy(name);
-        try {
-          const r = await call(path, { method: "POST" });
-          setMsg("✓ " + (r["说"] || okText));
-        } catch (e) {
-          setMsg(String(e.message || e));
-        } finally {
-          setBusy("");
-        }
-      };
+      if (!d) return h("div", { style: S.wrap }, h("p", { style: S.intro }, msg || "读取中…"));
 
-      if (!cfg) {
-        return h("div", { style: S.wrap }, h("p", { style: S.intro }, msg || "读取配置中…"));
-      }
+      const cfg = d.config;
+      const w = d.widget || {};
+      const widgetLive = !!w.ok;
+      const cur = sessions.find((s) => s.id === cfg["会话"]);
 
-      const port = cfg.端口 || 8777;
-      const live = state?.server?.ok;
+      const save = (patch) =>
+        run("save" + Object.keys(patch).join(""), () =>
+          call("/config", { method: "POST", body: JSON.stringify({ ...cfg, ...patch }) }),
+        );
 
       return h(
         "div",
@@ -149,95 +169,170 @@ window.__ModuleLoader__.load({
         h(
           "p",
           { style: S.intro },
-          "桌面挂件 ⇄ 这间会话的接线。挂件负责听、看、说；真正回你话的是你选的那一间会话。",
+          "桌面挂件 ⇄ 会话的接线。挂件负责听、看、说；真正回你话的是你选的那间会话。",
         ),
 
+        // ---------- 概览 ----------
         h(
-          "div",
-          { style: S.row },
-          h("div", { style: S.label }, "状态"),
+          Section,
+          { title: "概览" },
+          h(Row, { label: "插件" }, h("span", null, `v${d.version}`), h("span", { style: { ...S.hint, marginLeft: 8 } }, `已运行 ${Math.round((d.uptimeSec || 0) / 60)} 分钟`)),
+          h(Row, { label: "挂件口子" }, h(Badge, { ok: d.server?.ok, text: d.server?.ok ? `127.0.0.1:${d.server.port} 在听` : `没起来 ${d.server?.error || ""}` })),
           h(
-            "div",
-            null,
-            h(
-              "div",
-              null,
-              live ? `✓ 挂件口子 ${port} 在听` : `✗ 挂件口子没起来${state?.server?.error ? "：" + state.server.error : ""}`,
-            ),
-            h(
-              "div",
-              { style: S.hint },
-              `说过 ${state?.counts?.says ?? 0} 次 · 收图 ${state?.counts?.frames ?? 0} 张` +
-                (state?.lastReply ? ` · 最近回话：${String(state.lastReply).slice(0, 30)}` : ""),
-            ),
+            Row,
+            { label: "挂件" },
+            widgetLive
+              ? h(Badge, { ok: true, text: `在线 · v${w.version || "?"} · ${w["形象"] === "minimal" ? "极简圆点" : "素材形象"} · 陪看${w.watching ? "开着" : "关着"}` })
+              : h(Badge, { ok: false, text: `没应答（${w.error || "8778 不通"}）` }),
+          ),
+          h(Row, { label: "绑定会话" }, cur ? h("span", null, `${cur.title || "(无标题)"}`, h("span", { style: { ...S.hint, ...S.mono, marginLeft: 8 } }, cur.id)) : h("span", { style: S.bad }, cfg["会话"] ? cfg["会话"] + "（磁盘上没找到）" : "还没选")),
+          h(Row, { label: "计数" }, h("span", { style: S.hint }, `说过 ${d.counts?.says ?? 0} 次 · 收图 ${d.counts?.frames ?? 0} 张`)),
+          h(
+            Row,
+            { label: "最近回话" },
+            d.lastReply
+              ? h("div", null, h("div", null, d.lastReply), h("div", { style: S.hint }, when(d.lastReplyAt)))
+              : h("span", { style: S.hint }, "还没有"),
           ),
         ),
 
+        // ---------- 会话 ----------
         h(
-          "div",
-          { style: S.row },
-          h("div", { style: S.label }, "送到哪一间"),
+          Section,
+          { title: "送到哪一间会话" },
           h(
-            "div",
-            null,
-            h(
-              "select",
-              {
-                style: { ...S.input, minWidth: 380 },
-                value: cfg["会话"] || "",
-                onChange: (e) => setCfg({ ...cfg, 会话: e.target.value }),
-              },
-              h("option", { value: "" }, "（还没选）"),
-              ...sessions.map((s) => h("option", { key: s.id, value: s.id }, `${s.title || "(无标题)"} · ${s.id}`)),
+            "select",
+            {
+              style: S.input,
+              value: cfg["会话"] || "",
+              onChange: (e) => setD({ ...d, config: { ...cfg, 会话: e.target.value } }),
+            },
+            h("option", { value: "" }, "（还没选）"),
+            ...sessions.map((s) =>
+              h("option", { key: s.id, value: s.id }, `${s.title || "(无标题)"} · ${s.id.slice(0, 18)} · ${when(s.mtime)}`),
             ),
-            h("div", { style: S.hint }, "挂件说的话会当作你在这间会话里说的；她的最后一轮回话会推回挂件气泡。"),
           ),
-        ),
-
-        h(
-          "div",
-          { style: S.row },
-          h("div", { style: S.label }, "挂件路径"),
+          h("div", { style: S.hint }, "挂件说的话会当作你在这间会话里说的；她的最后一轮回话会推回挂件气泡。"),
           h(
             "div",
-            null,
+            { style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" } },
+            h("button", { style: S.btn, onClick: () => save({ 会话: cfg["会话"] }), disabled: !!busy }, "保存"),
+            h("button", { style: S.btn2, onClick: load, disabled: !!busy }, "刷新列表"),
             h("input", {
-              style: { ...S.input, minWidth: 460 },
+              style: { ...S.input, flex: 1, minWidth: 200, height: 30 },
+              placeholder: "发一句测试…",
+              value: test,
+              onChange: (e) => setTest(e.target.value),
+            }),
+            h(
+              "button",
+              {
+                style: S.btn2,
+                disabled: !!busy || !test.trim(),
+                onClick: () =>
+                  run("say", async () => {
+                    const r = await call("/say", { method: "POST", body: JSON.stringify({ text: test }) });
+                    setTest("");
+                    return r;
+                  }, "发进去了"),
+              },
+              "发一句",
+            ),
+          ),
+        ),
+
+        // ---------- 挂件 ----------
+        h(
+          Section,
+          { title: "挂件" },
+          h(
+            "div",
+            { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            h("button", { style: S.btn, onClick: () => run("launch", () => call("/launch", { method: "POST" })), disabled: !!busy }, busy === "launch" ? "启动中…" : "启动挂件"),
+            h("button", { style: S.btn2, onClick: () => run("settings", () => call("/open-widget-settings", { method: "POST" })), disabled: !!busy }, "打开挂件设置"),
+            h("button", { style: S.btn2, onClick: () => run("show", () => call("/show-widget", { method: "POST" })), disabled: !!busy }, "露头"),
+            h("button", { style: S.btn2, onClick: () => run("hide", () => call("/hide-widget", { method: "POST" })), disabled: !!busy }, "藏起来"),
+          ),
+          h("div", { style: { ...S.row, marginTop: 8 } },
+            h("div", { style: S.label }, "App 路径"),
+            h("input", {
+              style: S.input,
               value: cfg["挂件路径"] || "",
               placeholder: "/Applications/DSH-FishBuddy.app",
-              onChange: (e) => setCfg({ ...cfg, 挂件路径: e.target.value }),
+              onChange: (e) => setD({ ...d, config: { ...cfg, 挂件路径: e.target.value } }),
             }),
-            h("div", { style: S.hint }, "「启动挂件」用它；填 .app 的完整路径。"),
           ),
+          h("div", { style: { display: "flex", gap: 8, marginTop: 8 } },
+            h("button", { style: S.btn2, onClick: () => save({ 挂件路径: cfg["挂件路径"] }), disabled: !!busy }, "保存路径"),
+          ),
+          h("div", { style: S.hint }, "「启动挂件」用这个路径；挂件里还有更细的设置（热键/形象/朗读/陪看间隔）。"),
         ),
 
+        // ---------- 诊断 ----------
         h(
-          "div",
-          { style: S.row },
-          h("div", { style: S.label }, "回话递回"),
+          Section,
+          { title: "自检" },
           h(
             "div",
-            null,
+            { style: { display: "flex", gap: 8, alignItems: "center" } },
+            h("button", { style: S.btn2, disabled: !!busy, onClick: () => run("doctor", async () => { const r = await call("/doctor", { method: "POST" }); setChecks(r.checks || []); return { "说": "检查完了" }; }) }, busy === "doctor" ? "检查中…" : "跑一遍"),
+            checks ? h("span", { style: S.hint }, `${checks.filter((c) => c.ok).length}/${checks.length} 项通过`) : null,
+          ),
+          checks
+            ? h(
+                "div",
+                { style: { marginTop: 8 } },
+                ...checks.map((c, i) =>
+                  h("div", { key: i, style: { ...S.row, padding: "4px 0" } },
+                    h("div", { style: { width: 110, color: c.ok ? undefined : "var(--dsw-alias-state-error-primary)" } }, (c.ok ? "✓ " : "✗ ") + c.name),
+                    h("div", { style: { ...S.hint, flex: 1, marginTop: 0 } }, c.detail || ""),
+                  ),
+                ),
+              )
+            : null,
+        ),
+
+        // ---------- 高级 ----------
+        h(
+          Section,
+          { title: "高级" },
+          h(Row, { label: "端口" },
+            h("input", {
+              style: { ...S.input, maxWidth: 140 },
+              value: cfg["端口"] || 8777,
+              onChange: (e) => setD({ ...d, config: { ...cfg, 端口: Number(e.target.value) || 8777 } }),
+            }),
+            h("span", { style: { ...S.hint, marginLeft: 8 } }, "改完要重启 DSH"),
+          ),
+          h(Row, { label: "回话递回" },
             h("input", {
               style: S.input,
               value: cfg["回调"] || "",
-              onChange: (e) => setCfg({ ...cfg, 回调: e.target.value }),
+              onChange: (e) => setD({ ...d, config: { ...cfg, 回调: e.target.value } }),
             }),
-            h("div", { style: S.hint }, "默认 http://127.0.0.1:8778/hands/reply —— 挂件监听的那个口。"),
+          ),
+          h("div", { style: S.hint }, "默认 http://127.0.0.1:8778/hands/reply —— 挂件监听的那个口。"),
+          h("div", { style: { marginTop: 8 } },
+            h("button", { style: S.btn, onClick: () => save({ 端口: cfg["端口"], 回调: cfg["回调"] }), disabled: !!busy }, "保存高级设置"),
           ),
         ),
 
-        h(
-          "div",
-          { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14, paddingTop: 12, borderTop: ".5px solid var(--dsw-alias-border-l2)" } },
-          h("button", { style: S.btn, onClick: save, disabled: !!busy }, busy === "save" ? "保存中…" : "保存"),
-          h("button", { style: S.btn2, onClick: () => act("launch", "/launch", "挂件起来了"), disabled: !!busy }, busy === "launch" ? "启动中…" : "启动挂件"),
-          h("button", { style: S.btn2, onClick: () => act("settings", "/open-widget-settings", "设置打开了"), disabled: !!busy }, "打开挂件设置"),
-          h("button", { style: S.btn2, onClick: () => act("show", "/show-widget", "挂件出来了"), disabled: !!busy }, "让挂件露头"),
-          h("button", { style: S.btn2, onClick: load, disabled: !!busy }, "刷新"),
-        ),
+        // ---------- 事件 ----------
+        d.events?.length
+          ? h(
+              Section,
+              { title: "最近发生的事" },
+              h(
+                "div",
+                { style: { ...S.log, ...S.mono } },
+                ...d.events.slice().reverse().map((e, i) =>
+                  h("div", { key: i }, `${when(e.at)}  ${e.kind}  ${e.text}`),
+                ),
+              ),
+            )
+          : null,
 
-        msg ? h("div", { style: msg.startsWith("✓") ? { ...S.out } : S.err }, msg) : null,
+        msg ? h("div", { style: msg.startsWith("✓") ? { ...S.hint, marginTop: 8 } : { ...S.bad, marginTop: 8 } }, msg) : null,
       );
     }
 
