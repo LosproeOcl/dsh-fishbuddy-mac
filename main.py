@@ -163,7 +163,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.10.4"
+VERSION = "0.10.5"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -437,6 +437,7 @@ class Danmaku(NSObject):
 
     @objc.python_method
     def show_text(self, text):
+        """一条弹幕：窗口宽度按文字实际宽度算，长句也能整段滑完（不被截断）"""
         from AppKit import NSColor, NSFont, NSScreen, NSTextField
 
         try:
@@ -445,13 +446,6 @@ class Danmaku(NSObject):
                 return
             scr = NSScreen.mainScreen().frame()
             sw = scr.size.width
-            h = 54.0
-            self.label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, sw, h))
-            self.label.setStringValue_(text[:120])
-            self.label.setBezeled_(False)
-            self.label.setDrawsBackground_(False)
-            self.label.setEditable_(False)
-            self.label.setSelectable_(False)
             size = float(self.parent.settings.get("弹幕字号") or 30)
             fam = str(self.parent.settings.get("弹幕字体") or "")
             font = None
@@ -464,14 +458,42 @@ class Danmaku(NSObject):
                     )
             except Exception:
                 font = None
-            self.label.setFont_(font or NSFont.boldSystemFontOfSize_(size))
+            font = font or NSFont.boldSystemFontOfSize_(size)
+
+            text = text[:120]   # 再长就不是弹幕了
+
+            width = 0.0
+            try:
+                from Foundation import NSString
+
+                width = float(
+                    NSString.stringWithString_(text)
+                    .sizeWithAttributes_({"NSFont": font})
+                    .width
+                )
+            except Exception:
+                width = len(text) * size
+            pad = 48.0
+            win_w = max(sw, width + pad * 2)
+            h = max(54.0, size * 1.8)
+
+            self.label = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(pad, (h - size * 1.6) / 2, width + pad, size * 1.6)
+            )
+            self.label.setStringValue_(text)
+            self.label.setBezeled_(False)
+            self.label.setDrawsBackground_(False)
+            self.label.setEditable_(False)
+            self.label.setSelectable_(False)
+            self.label.setFont_(font)
             self.label.setTextColor_(NSColor.whiteColor())
-            self.label.setAlignment_(0)   # 左对齐：文字一进屏就能看见
-            self.label.setHasShadow_(True) if hasattr(self.label, "setHasShadow_") else None
+            self.label.setAlignment_(0)
+            self.label.setUsesSingleLineMode_(True)
+            self.label.setLineBreakMode_(2)   # 不换行、不截断
 
             if self.win is None:
                 self.win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-                    NSMakeRect(sw, scr.size.height * 0.72, sw, h),
+                    NSMakeRect(sw, scr.size.height * 0.72, win_w, h),
                     NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
                     NSBackingStoreBuffered,
                     False,
@@ -481,15 +503,18 @@ class Danmaku(NSObject):
                 self.win.setLevel_(5)
                 self.win.setIgnoresMouseEvents_(True)
             self.win.setContentView_(self.label)
-            self.win.setFrame_display_(NSMakeRect(sw, scr.size.height * 0.72, sw, h), False)
+            self.win.setFrame_display_(
+                NSMakeRect(sw, scr.size.height * 0.72, win_w, h), False
+            )
             self.win.orderFrontRegardless()
-            # 约 9 秒滑完；先停掉上一条，否则多个定时器叠加速度会翻倍
+
             if self.timer is not None:
                 try:
                     self.timer.invalidate()
                 except Exception:
                     pass
-            self.step = (sw + 200) / (9.0 * 30.0)
+            # 恒定速度 200px/s：长句慢一点、短句快一点，都读得完
+            self.step = 200.0 / 30.0
             self.timer = (
                 NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                     1.0 / 30.0, self, "fly:", None, True
