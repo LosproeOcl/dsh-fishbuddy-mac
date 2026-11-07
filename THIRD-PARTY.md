@@ -14,6 +14,16 @@
 > 之前版本用的是 Twemoji 🐳（CC-BY 4.0）；如果你更想避开商标问题，可以从 git 历史里取回那一版，
 > 或直接放一张自己的图。
 
+## assets/mascot.png —— 鲸鱼娘（看板娘）
+
+- 来源：[fornarwhal/deepseek-whale-girl-icon](https://github.com/fornarwhal/deepseek-whale-girl-icon) 的透明底版本
+- 角色：原创 OC「溟月」（作者：上善无形）；DeepSeek 元素二创：ZipZipPipe；修复版：QYQCAMIAO
+- 许可：[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+  —— **署名、非商业使用、相同方式共享**
+- 我们只做了缩放（512×512）
+- **注意**：这张图**不是 MIT**，也**不允许商用**；它单独按 CC BY-NC-SA 4.0 授权。
+  仓库里其他代码仍是 MIT。若你的使用场景涉及商业，请换成自己的图。
+
 ## assets/whale.svg
 
 Twemoji 的原始 SVG 留档（CC-BY 4.0，同上），仅作参考。

@@ -41,6 +41,7 @@ from AppKit import (
     NSObject,
     NSPanel,
     NSSegmentedControl,
+    NSSlider,
     NSStatusBar,
     NSStepper,
     NSTextField,
@@ -70,6 +71,7 @@ DEFAULT_SETTINGS = {
         "看一眼": [37, 1 << 19],  # ⌥L（按一下）
         "设置": [1, 1 << 19],     # ⌥S（打开设置）
     },
+    "尺寸": 132,          # 图标边长（像素）
     "陪看间隔": 20,
 }
 
@@ -154,7 +156,7 @@ ASSET_CANDIDATES = [
     os.path.join(HERE, "assets", "鱼搭子.png"),  # 本地自用
 ]
 
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 BALL = 132          # 鲸鱼直径
 SAMPLE_RATE = 16000
 MAX_RECORD = 30.0
@@ -1086,7 +1088,7 @@ class Whale(NSObject):
     @objc.python_method
     def set_state(self, s):
         self.state = s
-        base = 36.0 if self.settings.get("形象") == "minimal" else float(BALL)
+        base = float(self.icon_size())
         alpha = {"idle": 1.0, "listen": 0.9, "think": 0.92}.get(s, 1.0)
         try:
             self.win.setAlphaValue_(alpha if self.settings.get("形象") != "minimal" else alpha * 0.9)
@@ -1107,38 +1109,48 @@ class Whale(NSObject):
         return True
 
     @objc.python_method
+    def icon_size(self):
+        """当前形象该多大（像素）"""
+        base = int(self.settings.get("尺寸") or BALL)
+        if self.settings.get("形象") == "minimal":
+            return max(20, int(base * 0.30))
+        return max(48, min(320, base))
+
+    @objc.python_method
     def apply_display_mode(self, mode=None):
         mode = mode or self.settings.get("形象", "image")
         self.settings["形象"] = mode
+        size = self.icon_size()
         try:
             if mode == "minimal":
-                dot = os.path.join(HERE, "assets", "dot.png")
-                img = NSImage.alloc().initWithContentsOfFile_(dot) if os.path.exists(dot) else None
-                if img is None:
-                    img = placeholder_image(36)
-                self.iv.setImage_(img)
-                self.win.setFrame_display_(
-                    NSMakeRect(self.win.frame().origin.x, self.win.frame().origin.y, 36, 36),
-                    False,
-                )
-                self.iv.setFrame_(NSMakeRect(0, 0, 36, 36))
-                self.win.setAlphaValue_(0.88)
+                path = os.path.join(HERE, "assets", "dot.png")
+                img = NSImage.alloc().initWithContentsOfFile_(path) if os.path.exists(path) else None
+                img = img or placeholder_image(size)
+                self.win.setAlphaValue_(0.92)
             else:
+                cands = list(ASSET_CANDIDATES)
+                if mode == "mascot":
+                    cands = [os.path.join(HERE, "assets", "mascot.png")] + cands
                 img = None
-                for cand in ASSET_CANDIDATES:
+                for cand in cands:
                     if os.path.exists(cand):
                         img = NSImage.alloc().initWithContentsOfFile_(cand)
                         if img is not None:
                             break
-                self.iv.setImage_(img if img is not None else placeholder_image(BALL))
-                self.win.setFrame_display_(
-                    NSMakeRect(self.win.frame().origin.x, self.win.frame().origin.y, BALL, BALL),
-                    False,
-                )
-                self.iv.setFrame_(NSMakeRect(0, 0, BALL, BALL))
+                img = img or placeholder_image(size)
                 self.win.setAlphaValue_(1.0)
+            self.iv.setImage_(img)
+            f = self.win.frame()
+            self.win.setFrame_display_(NSMakeRect(f.origin.x, f.origin.y, size, size), False)
+            self.iv.setFrame_(NSMakeRect(0, 0, size, size))
         except Exception as e:
             log("换形象失败", e)
+
+    @objc.python_method
+    def set_icon_size(self, px):
+        self.settings["尺寸"] = max(48, min(320, int(px)))
+        save_settings(self.settings)
+        self.apply_display_mode()
 
     @objc.python_method
     def apply_widget_enabled(self, on):
@@ -1259,7 +1271,7 @@ class SettingsWindow(NSObject):
 
     @objc.python_method
     def build(self):
-        w, h = 470.0, 500.0
+        w, h = 480.0, 600.0
         self.win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, w, h),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
@@ -1282,35 +1294,48 @@ class SettingsWindow(NSObject):
             v.addSubview_(f)
             return f
 
-        label("大肥鱼 · 设置", 20, h - 42, 300, size=16, bold=True)
+        y = h - 40
+        label("大肥鱼 · 设置", 20, y, 300, size=16, bold=True)
 
         # 1) 挂件开关
-        self.cb_widget = NSButton.alloc().initWithFrame_(NSMakeRect(20, h - 82, 260, 24))
+        y -= 40
+        self.cb_widget = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 300, 24))
         self.cb_widget.setButtonType_(3)
         self.cb_widget.setTitle_("显示挂件（关掉只留菜单栏）")
         self.cb_widget.setTarget_(self)
         self.cb_widget.setAction_("toggleWidget:")
         v.addSubview_(self.cb_widget)
 
-        # 2) 形象
-        label("形象", 20, h - 120, 60)
-        self.seg = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(80, h - 124, 240, 26))
-        self.seg.setSegmentCount_(2)
-        self.seg.setLabel_forSegment_("素材形象", 0)
+        # 2) 形象（三选一）
+        y -= 38
+        label("形象", 20, y + 3, 60)
+        self.seg = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(80, y - 1, 330, 26))
+        self.seg.setSegmentCount_(3)
+        self.seg.setLabel_forSegment_("官方鲸鱼", 0)
         self.seg.setLabel_forSegment_("极简圆点", 1)
+        self.seg.setLabel_forSegment_("看板娘", 2)
         self.seg.setTarget_(self)
         self.seg.setAction_("modeChanged:")
         v.addSubview_(self.seg)
-        self.lbl_mode_hint = label(
-            "极简：只留一个小圆点，安静不抢眼", 80, h - 146, 360, size=11, gray=True
-        )
 
-        # 3) 热键（四个动作各一行）
-        label("全局热键", 20, h - 186, 90, bold=True)
+        # 3) 尺寸滑条
+        y -= 34
+        label("大小", 20, y + 3, 60)
+        self.slider = NSSlider.alloc().initWithFrame_(NSMakeRect(80, y - 2, 300, 26))
+        self.slider.setMinValue_(48)
+        self.slider.setMaxValue_(320)
+        self.slider.setContinuous_(True)
+        self.slider.setTarget_(self)
+        self.slider.setAction_("sizeChanged:")
+        v.addSubview_(self.slider)
+        self.lbl_size = label("132 px", 390, y + 3, 80, size=11, gray=True)
+
+        # 4) 热键
+        y -= 44
+        label("全局热键", 20, y, 90, bold=True)
         self.hotkey_buttons = {}
-        top = h - 214
         for i, (name, desc) in enumerate(HOTKEY_ACTIONS):
-            y = top - i * 34
+            y -= 34
             label(name, 34, y + 3, 60)
             btn = NSButton.alloc().initWithFrame_(NSMakeRect(96, y - 2, 150, 26))
             btn.setBezelStyle_(1)
@@ -1320,19 +1345,22 @@ class SettingsWindow(NSObject):
             v.addSubview_(btn)
             self.hotkey_buttons[name] = btn
             label(desc, 256, y + 3, 190, size=11, gray=True)
-        self.lbl_hint = label("", 96, h - 186 - 4, 360, size=11, gray=True)
+        y -= 26
+        self.lbl_hint = label("", 96, y, 360, size=11, gray=True)
 
-        # 4) 朗读
-        self.cb_speak = NSButton.alloc().initWithFrame_(NSMakeRect(20, h - 370, 320, 24))
+        # 5) 朗读
+        y -= 36
+        self.cb_speak = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 340, 24))
         self.cb_speak.setButtonType_(3)
         self.cb_speak.setTitle_("念出来（用系统语音读她的回话）")
         self.cb_speak.setTarget_(self)
         self.cb_speak.setAction_("toggleSpeak:")
         v.addSubview_(self.cb_speak)
 
-        # 5) 陪看间隔
-        label("陪看间隔", 20, h - 408, 70)
-        self.step = NSStepper.alloc().initWithFrame_(NSMakeRect(96, h - 412, 19, 27))
+        # 6) 陪看间隔
+        y -= 40
+        label("陪看间隔", 20, y + 3, 70)
+        self.step = NSStepper.alloc().initWithFrame_(NSMakeRect(96, y - 1, 19, 27))
         self.step.setMinValue_(10)
         self.step.setMaxValue_(120)
         self.step.setIncrement_(10)
@@ -1340,7 +1368,7 @@ class SettingsWindow(NSObject):
         self.step.setTarget_(self)
         self.step.setAction_("intervalChanged:")
         v.addSubview_(self.step)
-        self.lbl_interval = label("20 秒", 124, h - 406, 80)
+        self.lbl_interval = label("20 秒", 124, y + 3, 80)
 
         # 关闭
         btn = NSButton.alloc().initWithFrame_(NSMakeRect(w - 120, 18, 100, 30))
@@ -1354,7 +1382,11 @@ class SettingsWindow(NSObject):
     def refresh(self):
         st = self.whale.settings
         self.cb_widget.setState_(1 if st.get("挂件", True) else 0)
-        self.seg.setSelectedSegment_(1 if st.get("形象") == "minimal" else 0)
+        mode = st.get("形象") or "image"
+        self.seg.setSelectedSegment_({"image": 0, "minimal": 1, "mascot": 2}.get(mode, 0))
+        size = int(st.get("尺寸") or 132)
+        self.slider.setIntegerValue_(size)
+        self.lbl_size.setStringValue_("%d px" % size)
         self.cb_speak.setState_(1 if st.get("朗读") else 0)
         self.step.setIntegerValue_(int(st.get("陪看间隔") or 20))
         self.lbl_interval.setStringValue_("%d 秒" % int(st.get("陪看间隔") or 20))
@@ -1391,10 +1423,17 @@ class SettingsWindow(NSObject):
             self.whale.tts.stop()
 
     def modeChanged_(self, sender):
-        mode = "minimal" if sender.selectedSegment() == 1 else "image"
+        mode = {0: "image", 1: "minimal", 2: "mascot"}.get(int(sender.selectedSegment()), "image")
         self.whale.settings["形象"] = mode
         save_settings(self.whale.settings)
         self.whale.apply_display_mode(mode)
+
+    def sizeChanged_(self, sender):
+        px = int(sender.integerValue())
+        self.lbl_size.setStringValue_("%d px" % px)
+        self.whale.settings["尺寸"] = px
+        self.whale.apply_display_mode()
+        save_settings(self.whale.settings)
 
     def intervalChanged_(self, sender):
         n = int(sender.integerValue())

@@ -69,10 +69,21 @@ async function readBody(req, limit = 12 * 1024 * 1024) {
   }
 }
 
-function textOf(message) {
+function isReasoning(part) {
+  if (!part || typeof part !== 'object') return false
+  const t = String(part.type || '').toLowerCase()
+  if (t.includes('reason') || t.includes('think') || t.includes('analysis') || t.includes('summary')) {
+    return true
+  }
+  return Boolean(part.reasoning || part.thinking || part.redacted_reasoning)
+}
+
+/** 只要真正的回复正文：思考 / 推理 / 摘要片段一律丢掉 */
+export function textOf(message) {
   const content = message?.content ?? message?.parts ?? []
   const parts = Array.isArray(content) ? content : [content]
   return parts
+    .filter((p) => typeof p === 'string' || !isReasoning(p))
     .map((p) => {
       if (typeof p === 'string') return p
       if (p && typeof p.text === 'string') return p.text
